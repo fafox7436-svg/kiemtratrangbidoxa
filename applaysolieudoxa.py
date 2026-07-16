@@ -85,7 +85,6 @@ def load_data_full_dict(file_list):
 
 # ================= 3. LOGIC TỔNG HỢP V77 =================
 def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
-    # Lọc linh hoạt theo mã đơn vị nhập vào
     if ma_dvi_filter:
         tcd_calc = df_tcd[df_tcd['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
         tcc_calc = df_tcc[df_tcc['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
@@ -113,27 +112,17 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
     summary_tcd = pd.concat([summary_tcd, total_tcd.to_frame().T])
     summary_tcd = summary_tcd.reset_index().rename(columns={'index': 'Đơn Vị'})
 
-    # === 2. TỔNG HỢP TCC (FIXED) ===
+    # === 2. TỔNG HỢP TCC ===
     tcc_calc = tcc_calc[tcc_calc['LOAI_TRAM'] == 'CC'].copy()
     
-    # a. CTT có đo xa (Là CTT theo danh sách)
     tcc_calc['Count_Is_CTT'] = tcc_calc['CTT'].apply(lambda x: 1 if x == 'CTT' else 0)
-    
-    # b. CTT có trạng thái có dữ liệu
     tcc_calc['Count_CTT_Has_Data'] = tcc_calc['STT_CTT'].apply(lambda x: 1 if "CÓ DỮ LIỆU" in safe_str(x) else 0)
-    
-    # c. MD có dữ liệu
     tcc_calc['Count_MD_Has_Data'] = tcc_calc['STT_MODEM'].apply(lambda x: 1 if "CÓ DỮ LIỆU" in safe_str(x) else 0)
 
-    # d. Modem Offline: FIX LOGIC TẠI ĐÂY
-    # Điều kiện để đếm là Modem Offline:
-    # 1. KHÔNG PHẢI là CTT (Vì nếu là CTT thì đã được ưu tiên hiển thị CTT)
-    # 2. KHÔNG CÓ DỮ LIỆU (Trạng thái khác "Có dữ liệu")
-    # 3. CÓ MODEM (MD == 'MD')
     def is_really_modem_offline(row):
         is_ctt = (row['CTT'] == 'CTT')
         has_data = ("CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']))
-        has_md = (row['MD'] == 'MD')
+        has_md = (row['MD'] == 'MD') 
         
         if not is_ctt and not has_data and has_md:
             return 1
@@ -149,11 +138,9 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
         Modem_Offline=('Count_MD_Offline', 'sum')
     )
     
-    # e. CTT chưa đo xa = Tổng CTT - Modem có dữ liệu
     summary_tcc['CTT_Chua_Do_Xa'] = summary_tcc['CTT_Co_Do_Xa'] - summary_tcc['MD_Co_Du_Lieu']
     summary_tcc['CTT_Chua_Do_Xa'] = summary_tcc['CTT_Chua_Do_Xa'].clip(lower=0)
     
-    # f. Tỷ lệ thu thập
     summary_tcc['Numerator'] = summary_tcc['CTT_Co_Status'] + summary_tcc['MD_Co_Du_Lieu']
     summary_tcc['Denominator'] = summary_tcc['CTT_Co_Do_Xa'] + summary_tcc['MD_Co_Du_Lieu'] + summary_tcc['Modem_Offline']
     
@@ -171,7 +158,6 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
     total_tcc = summary_tcc.sum(numeric_only=True)
     total_tcc.name = 'TỔNG CỘNG'
     
-    # Tính lại tỷ lệ tổng
     num_total = total_tcc['CTT có trạng thái DL'] + total_tcc['MD có dữ liệu']
     den_total = total_tcc['Tổng CTT'] + total_tcc['MD có dữ liệu'] + total_tcc['Modem Offline']
     total_tcc['Tỷ lệ thu thập (%)'] = (num_total / den_total * 100) if den_total > 0 else 0
@@ -191,7 +177,11 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
         'STT_CTT': 'GHI CHÚ DỮ LIỆU CTT', 
         'CTT': 'DANH SÁCH CTT',
         'MD': 'CÓ MD', 
-        'DCU': 'CÓ DCU'
+        'DCU': 'CÓ DCU',
+        'IMEI_MD': 'IMEI (MODEM)',
+        'METHOD_CTT': 'PHƯƠNG THỨC CTT',
+        'SERIAL_SIM': 'SERIAL SIM',   # Tên hiển thị mới
+        'SDT_SIM': 'SĐT SIM'          # Tên hiển thị mới
     }
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -201,6 +191,7 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
         fmt_green = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
         fmt_blue = workbook.add_format({'bg_color': '#BDD7EE', 'font_color': '#000000'})
         fmt_purple = workbook.add_format({'bg_color': '#E4C7FA', 'font_color': '#333333'})
+        fmt_grey = workbook.add_format({'bg_color': '#D9D9D9', 'font_color': '#595959', 'italic': True})
         
         fmt_header = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#D3D3D3', 'align': 'center', 'valign': 'vcenter'})
         fmt_sum_header_tcd = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#4472C4', 'font_color': 'white', 'align': 'center', 'valign': 'vcenter'})
@@ -211,6 +202,12 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
             if df_in is None: return
             df_temp = df_in.copy()
             if drop_cols: df_temp = df_temp.drop(columns=drop_cols, errors='ignore')
+            
+            cols = list(df_temp.columns)
+            if 'NHAN_XET' in cols:
+                cols.insert(1, cols.pop(cols.index('NHAN_XET')))
+            df_temp = df_temp[cols]
+
             df_display = df_temp.rename(columns=rename_dict)
             df_display.to_excel(writer, index=False, sheet_name=name)
             ws = writer.sheets[name]
@@ -226,6 +223,7 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'có dữ liệu', 'format': fmt_green})
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'CTT chưa thu thập', 'format': fmt_blue})
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Lỗi CTT', 'format': fmt_purple})
+                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Thanh lý Modem', 'format': fmt_grey})
                 
                 if "TRẠNG THÁI MODEM" in df_display.columns:
                     col_idx_md = df_display.columns.get_loc("TRẠNG THÁI MODEM")
@@ -294,19 +292,51 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
         dict_ctt_full = load_data_full_dict(f_data_ctt)
         st.success(f"✅ Đã tải dữ liệu.")
 
+        # --- XỬ LÝ FILE 1: MODEM ALL (Lấy thêm IMEI và SERIALSIM) ---
         df_md, _ = find_header_row_and_read(f_md, ["MADIEMDO"])
         c_md = find_col(df_md, ["MADIEMDO"])
-        s_md = set(df_md[c_md].apply(get_left_13)) if c_md else set()
+        c_imei = find_col(df_md, ["IMEI"])
+        c_sim_md = find_col(df_md, ["SERIALSIM", "SERIAL_SIM"])
+        
+        dict_md_imei = {}
+        dict_md_sim = {}
+        if c_md:
+            for _, row in df_md.iterrows():
+                md_code = get_left_13(row[c_md])
+                val_imei = safe_str(row[c_imei]) if c_imei else ""
+                val_sim = safe_str(row[c_sim_md]) if c_sim_md else ""
+                
+                dict_md_imei[md_code] = val_imei
+                dict_md_sim[md_code] = val_sim
+        s_md = set(dict_md_imei.keys())
 
+        # --- XỬ LÝ FILE 3: DCU ALL (Lấy thêm SDT_SIM) ---
         df_dc, _ = find_header_row_and_read(f_dc, ["MATRAM"])
         c_dc = find_col(df_dc, ["MATRAM"])
-        s_dc = set(df_dc[c_dc].apply(clean_station_code)) if c_dc else set()
+        c_sdt_dc = find_col(df_dc, ["SDT_SIM", "SDTSIM", "SĐT"])
+        
+        dict_dc_sdt = {}
+        if c_dc:
+            for _, row in df_dc.iterrows():
+                dc_code = clean_station_code(row[c_dc])
+                val_sdt = safe_str(row[c_sdt_dc]) if c_sdt_dc else ""
+                dict_dc_sdt[dc_code] = val_sdt
+        s_dc = set(dict_dc_sdt.keys())
 
+        # --- XỬ LÝ FILE 4: CTT ALL ---
         df_ct, _ = find_header_row_and_read(f_ct, ["MADIEMDO", "MATRAM", "TENTRAM"])
-        c1 = find_col(df_ct, ["MADIEMDO"])
-        s_ct1 = set(df_ct[c1].apply(get_left_13)) if c1 else set()
-        c2 = find_col(df_ct, ["TENTRAM", "MATRAM"])
-        s_ct2 = set(df_ct[c2].apply(clean_station_code)) if c2 else set()
+        c1_ct = find_col(df_ct, ["MADIEMDO"])
+        c2_ct = find_col(df_ct, ["TENTRAM", "MATRAM"])
+        c_method = find_col(df_ct, ["METHOD", "PHƯƠNG THỨC", "PHUONG THUC"])
+        
+        dict_ct_method = {}
+        if c1_ct and c_method:
+            for _, row in df_ct.iterrows():
+                md_code = get_left_13(row[c1_ct])
+                dict_ct_method[md_code] = safe_str(row[c_method])
+                
+        s_ct1 = set(df_ct[c1_ct].apply(get_left_13)) if c1_ct else set()
+        s_ct2 = set(df_ct[c2_ct].apply(clean_station_code)) if c2_ct else set()
 
         def process(f, type_):
             df, _ = find_header_row_and_read(f, ["MA_KHANG", "MA_DDO", "MA_KHACH_HANG"])
@@ -332,7 +362,21 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
             k13 = out['MA_SO'].apply(get_left_13)
             ktram = out['MA_TRAM'].apply(clean_station_code)
             
-            out['MD'] = k13.apply(lambda x: "MD" if x in s_md else "")
+            out['IMEI_MD'] = k13.map(dict_md_imei).fillna("")
+            out['METHOD_CTT'] = k13.map(dict_ct_method).fillna("")
+            
+            # --- MAP THÊM CỘT SIM VÀ SĐT ---
+            out['SERIAL_SIM'] = k13.map(dict_md_sim).fillna("")
+            out['SDT_SIM'] = ktram.map(dict_dc_sdt).fillna("")
+            
+            def evaluate_md(code):
+                if code not in s_md: return ""
+                imei = dict_md_imei.get(code, "")
+                if imei == "" or imei == "NAN": 
+                    return "Thanh lý"
+                return "MD"
+                
+            out['MD'] = k13.apply(evaluate_md)
             out['DCU'] = ktram.apply(lambda x: "DCU" if x in s_dc else "")
             out['CTT'] = [ "CTT" if (k in s_ct1 or t in s_ct2) else "" for k, t in zip(k13, ktram) ]
             
@@ -341,21 +385,25 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
             
             def status(row):
                 stt_md = safe_str(row['STT_MODEM'])
+                is_liquidated = (row['MD'] == "Thanh lý")
+                method_ctt = row['METHOD_CTT']
                 
-                # Ưu tiên 1: CTT
-                if row['CTT'] == "CTT": return "Công Tơ Tổng"
+                if is_liquidated and method_ctt != "":
+                    return f"Thanh lý Modem - Thu thập qua {method_ctt}"
                 
-                # Ưu tiên 2: Modem có DL
-                if "CÓ DỮ LIỆU" in stt_md: return "Modem có dữ liệu"
+                if row['CTT'] == "CTT": 
+                    return f"Công Tơ Tổng ({method_ctt})" if method_ctt else "Công Tơ Tổng"
                 
-                # Ưu tiên 3: Modem Offline (Phải là MD + Ko có DL + Ko phải CTT)
+                if "CÓ DỮ LIỆU" in stt_md: 
+                    return "Modem có dữ liệu"
+                
                 if row['MD'] == "MD":
-                    if row['STT_MODEM'] != "":
-                        return f"Modem Offline ({row['STT_MODEM']})"
-                    else:
-                        return "Modem Offline"
+                    if row['STT_MODEM'] != "": return f"Modem Offline ({row['STT_MODEM']})"
+                    return "Modem Offline"
                 
-                # Ưu tiên 4: DCU
+                if is_liquidated:
+                    return "Thanh lý Modem (Chưa khai báo hệ thống thay thế)"
+                    
                 if row['DCU'] == "DCU": return "Đo qua DCU"
                 
                 return "Chưa khai báo"
