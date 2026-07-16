@@ -52,15 +52,6 @@ def find_header_row_and_read(file_obj, keywords):
         return df, header_row_idx
     except: return None, 0
 
-def smart_read_simple(file_obj):
-    if file_obj is None: return None
-    try:
-        file_obj.seek(0)
-        if file_obj.name.lower().endswith('.csv'): return pd.read_csv(file_obj, dtype=str)
-        elif file_obj.name.lower().endswith('.xls'): return pd.read_excel(file_obj, dtype=str, engine='xlrd')
-        else: return pd.read_excel(file_obj, dtype=str)
-    except: return None
-
 def find_col(df, keywords):
     if df is None: return None
     for kw in keywords:
@@ -122,7 +113,7 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
     def is_really_modem_offline(row):
         is_ctt = (row['CTT'] == 'CTT')
         has_data = ("CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']))
-        has_md = (row['MD'] == 'MD') 
+        has_md = (row['MD'] == 'MD') # Không tính những ca Thu hồi
         
         if not is_ctt and not has_data and has_md:
             return 1
@@ -180,8 +171,8 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
         'DCU': 'CÓ DCU',
         'IMEI_MD': 'IMEI (MODEM)',
         'METHOD_CTT': 'PHƯƠNG THỨC CTT',
-        'SERIAL_SIM': 'SERIAL SIM',   # Tên hiển thị mới
-        'SDT_SIM': 'SĐT SIM'          # Tên hiển thị mới
+        'SERIAL_SIM': 'SERIAL SIM',
+        'SDT_SIM': 'SĐT SIM'
     }
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -223,7 +214,9 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'có dữ liệu', 'format': fmt_green})
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'CTT chưa thu thập', 'format': fmt_blue})
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Lỗi CTT', 'format': fmt_purple})
-                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Thanh lý Modem', 'format': fmt_grey})
+                
+                # Tô xám cho những ca "Thu hồi Modem"
+                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Thu hồi Modem', 'format': fmt_grey})
                 
                 if "TRẠNG THÁI MODEM" in df_display.columns:
                     col_idx_md = df_display.columns.get_loc("TRẠNG THÁI MODEM")
@@ -292,23 +285,25 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
         dict_ctt_full = load_data_full_dict(f_data_ctt)
         st.success(f"✅ Đã tải dữ liệu.")
 
-        # --- XỬ LÝ FILE 1: MODEM ALL (Lấy thêm IMEI và SERIALSIM) ---
+        # --- XỬ LÝ FILE 1: MODEM ALL (Lấy thêm IMEI, SERIALID, METERTYPE, SERIALSIM) ---
         df_md, _ = find_header_row_and_read(f_md, ["MADIEMDO"])
         c_md = find_col(df_md, ["MADIEMDO"])
         c_imei = find_col(df_md, ["IMEI"])
+        c_serialid = find_col(df_md, ["SERIALID"])
+        c_metertype = find_col(df_md, ["METERTYPE"])
         c_sim_md = find_col(df_md, ["SERIALSIM", "SERIAL_SIM"])
         
-        dict_md_imei = {}
-        dict_md_sim = {}
+        dict_md_info = {}
         if c_md:
             for _, row in df_md.iterrows():
                 md_code = get_left_13(row[c_md])
-                val_imei = safe_str(row[c_imei]) if c_imei else ""
-                val_sim = safe_str(row[c_sim_md]) if c_sim_md else ""
-                
-                dict_md_imei[md_code] = val_imei
-                dict_md_sim[md_code] = val_sim
-        s_md = set(dict_md_imei.keys())
+                dict_md_info[md_code] = {
+                    'imei': safe_str(row[c_imei]) if c_imei else "",
+                    'serial': safe_str(row[c_serialid]) if c_serialid else "",
+                    'metertype': safe_str(row[c_metertype]) if c_metertype else "",
+                    'sim': safe_str(row[c_sim_md]) if c_sim_md else ""
+                }
+        s_md = set(dict_md_info.keys())
 
         # --- XỬ LÝ FILE 3: DCU ALL (Lấy thêm SDT_SIM) ---
         df_dc, _ = find_header_row_and_read(f_dc, ["MATRAM"])
@@ -323,7 +318,7 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
                 dict_dc_sdt[dc_code] = val_sdt
         s_dc = set(dict_dc_sdt.keys())
 
-        # --- XỬ LÝ FILE 4: CTT ALL ---
+        # --- XỬ LÝ FILE 4: CTT ALL (Lấy Method) ---
         df_ct, _ = find_header_row_and_read(f_ct, ["MADIEMDO", "MATRAM", "TENTRAM"])
         c1_ct = find_col(df_ct, ["MADIEMDO"])
         c2_ct = find_col(df_ct, ["TENTRAM", "MATRAM"])
@@ -362,18 +357,33 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
             k13 = out['MA_SO'].apply(get_left_13)
             ktram = out['MA_TRAM'].apply(clean_station_code)
             
-            out['IMEI_MD'] = k13.map(dict_md_imei).fillna("")
+            # Map dữ liệu info
+            out['IMEI_MD'] = k13.apply(lambda x: dict_md_info.get(x, {}).get('imei', ''))
             out['METHOD_CTT'] = k13.map(dict_ct_method).fillna("")
-            
-            # --- MAP THÊM CỘT SIM VÀ SĐT ---
-            out['SERIAL_SIM'] = k13.map(dict_md_sim).fillna("")
+            out['SERIAL_SIM'] = k13.apply(lambda x: dict_md_info.get(x, {}).get('sim', ''))
             out['SDT_SIM'] = ktram.map(dict_dc_sdt).fillna("")
             
             def evaluate_md(code):
                 if code not in s_md: return ""
-                imei = dict_md_imei.get(code, "")
-                if imei == "" or imei == "NAN": 
-                    return "Thanh lý"
+                
+                info = dict_md_info.get(code, {})
+                imei = info.get('imei', '')
+                serialid = info.get('serial', '')
+                metertype = info.get('metertype', '')
+                
+                # Check nếu ĐỒNG THỜI cả 3 cột IMEI, Serialid, Metertype đều rỗng (hoặc NAN)
+                is_empty_hardware = (
+                    (imei == "" or imei == "NAN") and 
+                    (serialid == "" or serialid == "NAN") and 
+                    (metertype == "" or metertype == "NAN")
+                )
+                
+                method_ctt = dict_ct_method.get(code, "").upper()
+                
+                # Nếu trống phần cứng VÀ bên CTT là RS485 -> Ghi nhận "Thu hồi"
+                if is_empty_hardware and "RS485" in method_ctt:
+                    return "Thu hồi"
+                    
                 return "MD"
                 
             out['MD'] = k13.apply(evaluate_md)
@@ -385,25 +395,26 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
             
             def status(row):
                 stt_md = safe_str(row['STT_MODEM'])
-                is_liquidated = (row['MD'] == "Thanh lý")
                 method_ctt = row['METHOD_CTT']
                 
-                if is_liquidated and method_ctt != "":
-                    return f"Thanh lý Modem - Thu thập qua {method_ctt}"
+                # Ưu tiên 0: Đã ghi nhận là THU HỒI
+                if row['MD'] == "Thu hồi":
+                    return f"Thu hồi Modem - Thu thập qua {method_ctt}"
                 
+                # Ưu tiên 1: CTT
                 if row['CTT'] == "CTT": 
                     return f"Công Tơ Tổng ({method_ctt})" if method_ctt else "Công Tơ Tổng"
                 
+                # Ưu tiên 2: Modem có DL
                 if "CÓ DỮ LIỆU" in stt_md: 
                     return "Modem có dữ liệu"
                 
+                # Ưu tiên 3: Modem Offline (Phải là MD chuẩn)
                 if row['MD'] == "MD":
                     if row['STT_MODEM'] != "": return f"Modem Offline ({row['STT_MODEM']})"
                     return "Modem Offline"
-                
-                if is_liquidated:
-                    return "Thanh lý Modem (Chưa khai báo hệ thống thay thế)"
                     
+                # Ưu tiên 4: DCU
                 if row['DCU'] == "DCU": return "Đo qua DCU"
                 
                 return "Chưa khai báo"
