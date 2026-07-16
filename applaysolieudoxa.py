@@ -88,12 +88,14 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
     tcd_calc['Flag_DCU'] = tcd_calc['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
     tcd_calc['Flag_MD'] = tcd_calc['MD'].apply(lambda x: 1 if x == 'MD' else 0)
 
+    # ---> FIX LỖI TẠI ĐÂY: Thêm .fillna(0).astype(int) để ép kiểu dữ liệu <---
     summary_tcd = tcd_calc.groupby('MA_DVIQLY').agg(
         Tong_TCD_CMIS=('MA_SO', 'count'),
         Co_MD=('Flag_MD', 'sum'), 
         Co_DCU=('Flag_DCU', 'sum'),
         Modem_Co_Du_Lieu=('Flag_Modem_Data', 'sum')
-    )
+    ).fillna(0).astype(int)
+
     summary_tcd['Chua_Co_Do_Xa'] = summary_tcd['Tong_TCD_CMIS'] - (summary_tcd['Co_DCU'] + summary_tcd['Modem_Co_Du_Lieu'])
     summary_tcd['Chua_Co_Do_Xa'] = summary_tcd['Chua_Co_Do_Xa'].clip(lower=0)
     
@@ -113,7 +115,7 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
     def is_really_modem_offline(row):
         is_ctt = (row['CTT'] == 'CTT')
         has_data = ("CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']))
-        has_md = (row['MD'] == 'MD') # Không tính những ca Thu hồi
+        has_md = (row['MD'] == 'MD') 
         
         if not is_ctt and not has_data and has_md:
             return 1
@@ -121,13 +123,14 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
 
     tcc_calc['Count_MD_Offline'] = tcc_calc.apply(is_really_modem_offline, axis=1)
 
+    # ---> FIX LỖI TẠI ĐÂY: Thêm .fillna(0).astype(int) để ép kiểu dữ liệu <---
     summary_tcc = tcc_calc.groupby('MA_DVIQLY').agg(
         Tong_Tram_CC=('MA_SO', 'count'),            
         CTT_Co_Do_Xa=('Count_Is_CTT', 'sum'),        
         MD_Co_Du_Lieu=('Count_MD_Has_Data', 'sum'),  
         CTT_Co_Status=('Count_CTT_Has_Data', 'sum'),
         Modem_Offline=('Count_MD_Offline', 'sum')
-    )
+    ).fillna(0).astype(int)
     
     summary_tcc['CTT_Chua_Do_Xa'] = summary_tcc['CTT_Co_Do_Xa'] - summary_tcc['MD_Co_Du_Lieu']
     summary_tcc['CTT_Chua_Do_Xa'] = summary_tcc['CTT_Chua_Do_Xa'].clip(lower=0)
