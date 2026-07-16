@@ -83,17 +83,22 @@ def load_data_full_dict(file_list):
                     result_dict[code] = status
     return result_dict
 
-# ================= 3. LOGIC TỔNG HỢP V77 (FIX LOGIC ĐẾM) =================
-def create_summaries(df_tcd, df_tcc):
-    tcd_pb06 = df_tcd[df_tcd['MA_DVIQLY'].astype(str).str.startswith('PB06')].copy()
-    tcc_pb06 = df_tcc[df_tcc['MA_DVIQLY'].astype(str).str.startswith('PB06')].copy()
+# ================= 3. LOGIC TỔNG HỢP V77 =================
+def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
+    # Lọc linh hoạt theo mã đơn vị nhập vào
+    if ma_dvi_filter:
+        tcd_calc = df_tcd[df_tcd['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
+        tcc_calc = df_tcc[df_tcc['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
+    else:
+        tcd_calc = df_tcd.copy()
+        tcc_calc = df_tcc.copy()
     
     # === 1. TỔNG HỢP TCD ===
-    tcd_pb06['Flag_Modem_Data'] = tcd_pb06['STT_MODEM'].apply(lambda x: 1 if "CÓ DỮ LIỆU" in safe_str(x) else 0)
-    tcd_pb06['Flag_DCU'] = tcd_pb06['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
-    tcd_pb06['Flag_MD'] = tcd_pb06['MD'].apply(lambda x: 1 if x == 'MD' else 0)
+    tcd_calc['Flag_Modem_Data'] = tcd_calc['STT_MODEM'].apply(lambda x: 1 if "CÓ DỮ LIỆU" in safe_str(x) else 0)
+    tcd_calc['Flag_DCU'] = tcd_calc['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
+    tcd_calc['Flag_MD'] = tcd_calc['MD'].apply(lambda x: 1 if x == 'MD' else 0)
 
-    summary_tcd = tcd_pb06.groupby('MA_DVIQLY').agg(
+    summary_tcd = tcd_calc.groupby('MA_DVIQLY').agg(
         Tong_TCD_CMIS=('MA_SO', 'count'),
         Co_MD=('Flag_MD', 'sum'), 
         Co_DCU=('Flag_DCU', 'sum'),
@@ -109,7 +114,7 @@ def create_summaries(df_tcd, df_tcc):
     summary_tcd = summary_tcd.reset_index().rename(columns={'index': 'Đơn Vị'})
 
     # === 2. TỔNG HỢP TCC (FIXED) ===
-    tcc_calc = tcc_pb06[tcc_pb06['LOAI_TRAM'] == 'CC'].copy()
+    tcc_calc = tcc_calc[tcc_calc['LOAI_TRAM'] == 'CC'].copy()
     
     # a. CTT có đo xa (Là CTT theo danh sách)
     tcc_calc['Count_Is_CTT'] = tcc_calc['CTT'].apply(lambda x: 1 if x == 'CTT' else 0)
@@ -137,9 +142,9 @@ def create_summaries(df_tcd, df_tcc):
     tcc_calc['Count_MD_Offline'] = tcc_calc.apply(is_really_modem_offline, axis=1)
 
     summary_tcc = tcc_calc.groupby('MA_DVIQLY').agg(
-        Tong_Tram_CC=('MA_SO', 'count'),           
-        CTT_Co_Do_Xa=('Count_Is_CTT', 'sum'),       
-        MD_Co_Du_Lieu=('Count_MD_Has_Data', 'sum'), 
+        Tong_Tram_CC=('MA_SO', 'count'),            
+        CTT_Co_Do_Xa=('Count_Is_CTT', 'sum'),        
+        MD_Co_Du_Lieu=('Count_MD_Has_Data', 'sum'),  
         CTT_Co_Status=('Count_CTT_Has_Data', 'sum'),
         Modem_Offline=('Count_MD_Offline', 'sum')
     )
@@ -259,6 +264,10 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
 # ================= 5. GIAO DIỆN CHÍNH =================
 st.title("⚡ Tool SFW V77 (Strict Modem Offline Count)")
 
+st.markdown("### ⚙️ Cấu hình bộ lọc")
+ma_dvi_filter = st.text_input("🔍 Nhập Mã Đơn Vị cần lọc (VD: PB06, PB0606... Để trống để tổng hợp tất cả):", value="PB06").strip().upper()
+st.markdown("---")
+
 c1, c2 = st.columns([1, 1.2])
 with c1:
     st.header("1. File Input")
@@ -358,10 +367,11 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
         tcc_final = process(f_tcc, "TCC")
 
         if tcd_final is not None and tcc_final is not None:
-            sum_tcd, sum_tcc = create_summaries(tcd_final, tcc_final)
+            sum_tcd, sum_tcc = create_summaries(tcd_final, tcc_final, ma_dvi_filter)
             excel_bytes = to_excel_4_sheets(tcd_final, tcc_final, sum_tcd, sum_tcc)
             st.success("✅ ĐÃ XONG!")
-            with st.expander("📊 Xem Tổng Hợp TCC (V77)"): st.dataframe(sum_tcc)
+            with st.expander(f"📊 Xem Tổng Hợp (Lọc theo: {ma_dvi_filter if ma_dvi_filter else 'TẤT CẢ'})"): 
+                st.dataframe(sum_tcc)
             st.download_button("📥 TẢI KẾT QUẢ V77.xlsx", excel_bytes, "Ket_Qua_V77.xlsx", "primary")
         else:
             st.error("Lỗi xử lý file.")
