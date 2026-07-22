@@ -4,7 +4,7 @@ import io
 import os
 
 # ================= 1. CẤU HÌNH =================
-st.set_page_config(page_title="Tool SFW V77 - Strict TCC Counting", layout="wide")
+st.set_page_config(page_title="Tool SFW V77 - TCC & TCD Summaries", layout="wide")
 
 # ================= 2. HÀM HỖ TRỢ =================
 def safe_str(val):
@@ -70,7 +70,6 @@ def load_data_full_dict(file_list):
             if c_ma and c_tt:
                 for index, row in df_tmp.iterrows():
                     code = get_left_13(row[c_ma])
-                    # Fix: Bỏ qua các dòng không có mã điểm đo
                     if code != "":
                         status = str(row[c_tt]).strip()
                         result_dict[code] = status
@@ -78,29 +77,41 @@ def load_data_full_dict(file_list):
 
 # ================= 3. LOGIC TỔNG HỢP V77 =================
 def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
+    # Hỗ trợ lọc theo khoảng (VD: PB0501-PB0614)
     if ma_dvi_filter:
-        tcd_calc = df_tcd[df_tcd['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
-        tcc_calc = df_tcc[df_tcc['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
+        if "-" in ma_dvi_filter:
+            start_dvi, end_dvi = [x.strip() for x in ma_dvi_filter.split("-")]
+            tcd_calc = df_tcd[(df_tcd['MA_DVIQLY'] >= start_dvi) & (df_tcd['MA_DVIQLY'] <= end_dvi)].copy()
+            tcc_calc = df_tcc[(df_tcc['MA_DVIQLY'] >= start_dvi) & (df_tcc['MA_DVIQLY'] <= end_dvi)].copy()
+        else:
+            tcd_calc = df_tcd[df_tcd['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
+            tcc_calc = df_tcc[df_tcc['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
     else:
         tcd_calc = df_tcd.copy()
         tcc_calc = df_tcc.copy()
     
     # === 1. TỔNG HỢP TCD ===
-    tcd_calc['Flag_Modem_Data'] = tcd_calc['STT_MODEM'].apply(lambda x: 1 if "CÓ DỮ LIỆU" in safe_str(x) else 0)
-    tcd_calc['Flag_DCU'] = tcd_calc['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
     tcd_calc['Flag_MD'] = tcd_calc['MD'].apply(lambda x: 1 if x == 'MD' else 0)
+    tcd_calc['Flag_DCU'] = tcd_calc['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
+    tcd_calc['Flag_Chua_Khai_Bao'] = tcd_calc['NHAN_XET'].apply(lambda x: 1 if "Chưa khai báo" in str(x) else 0)
+    
+    tcd_calc['Flag_Modem_Data'] = tcd_calc.apply(lambda row: 1 if row['MD'] == 'MD' and "CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']) else 0, axis=1)
+    tcd_calc['Flag_DCU_Data'] = tcd_calc.apply(lambda row: 1 if row['DCU'] == 'DCU' and "CÓ DỮ LIỆU" in safe_str(row['STT_DCU']) else 0, axis=1)
 
     summary_tcd = tcd_calc.groupby('MA_DVIQLY').agg(
-        Tong_TCD_CMIS=('MA_SO', 'count'),
-        Co_MD=('Flag_MD', 'sum'), 
-        Co_DCU=('Flag_DCU', 'sum'),
-        Modem_Co_Du_Lieu=('Flag_Modem_Data', 'sum')
+        Tong_Tram=('MA_SO', 'count'),
+        So_Tram_MD=('Flag_MD', 'sum'),
+        So_Tram_DCU=('Flag_DCU', 'sum'),
+        Chua_Khai_Bao=('Flag_Chua_Khai_Bao', 'sum'),
+        Modem_Co_Du_Lieu=('Flag_Modem_Data', 'sum'),
+        DCU_Co_Du_Lieu=('Flag_DCU_Data', 'sum')
     ).fillna(0).astype(int)
 
-    summary_tcd['Chua_Co_Do_Xa'] = summary_tcd['Tong_TCD_CMIS'] - (summary_tcd['Co_DCU'] + summary_tcd['Modem_Co_Du_Lieu'])
-    summary_tcd['Chua_Co_Do_Xa'] = summary_tcd['Chua_Co_Do_Xa'].clip(lower=0)
+    summary_tcd.columns = [
+        'Tổng số trạm', 'Số trạm thu thập modem', 'Trạm thu thập qua DCU', 
+        'Số trạm chưa khai báo', 'Số modem có dữ liệu', 'Số DCU có dữ liệu'
+    ]
     
-    summary_tcd.columns = ['Tổng số TCD', 'Có MD', 'Có DCU', 'Modem có dữ liệu', 'Chưa có đo xa']
     total_tcd = summary_tcd.sum(numeric_only=True)
     total_tcd.name = 'TỔNG CỘNG'
     summary_tcd = pd.concat([summary_tcd, total_tcd.to_frame().T])
@@ -109,53 +120,41 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
     # === 2. TỔNG HỢP TCC ===
     tcc_calc = tcc_calc[tcc_calc['LOAI_TRAM'] == 'CC'].copy()
     
-    tcc_calc['Count_Is_CTT'] = tcc_calc['CTT'].apply(lambda x: 1 if x == 'CTT' else 0)
-    tcc_calc['Count_CTT_Has_Data'] = tcc_calc['STT_CTT'].apply(lambda x: 1 if "CÓ DỮ LIỆU" in safe_str(x) else 0)
-    tcc_calc['Count_MD_Has_Data'] = tcc_calc['STT_MODEM'].apply(lambda x: 1 if "CÓ DỮ LIỆU" in safe_str(x) else 0)
-
-    def is_really_modem_offline(row):
-        is_ctt = (row['CTT'] == 'CTT')
-        has_data = ("CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']))
-        has_md = (row['MD'] == 'MD') 
-        
-        if not is_ctt and not has_data and has_md:
-            return 1
-        return 0
-
-    tcc_calc['Count_MD_Offline'] = tcc_calc.apply(is_really_modem_offline, axis=1)
+    tcc_calc['Flag_MD'] = tcc_calc['MD'].apply(lambda x: 1 if x == 'MD' else 0)
+    tcc_calc['Flag_DCU'] = tcc_calc['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
+    
+    tcc_calc['Flag_RS485'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'RS485' in safe_str(row['METHOD_CTT']) else 0, axis=1)
+    tcc_calc['Flag_RS232'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'RS232' in safe_str(row['METHOD_CTT']) else 0, axis=1)
+    tcc_calc['Flag_GPRS'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'GPRS' in safe_str(row['METHOD_CTT']) else 0, axis=1)
+    tcc_calc['Flag_PLC'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'PLC' in safe_str(row['METHOD_CTT']) else 0, axis=1)
+    
+    # Logic: Đo qua DCU = Cột DCU là 'DCU' VÀ Phương thức CTT trống
+    tcc_calc['Flag_Do_Qua_DCU'] = tcc_calc.apply(lambda row: 1 if row['DCU'] == 'DCU' and safe_str(row['METHOD_CTT']) == "" else 0, axis=1)
+    
+    tcc_calc['Flag_Modem_Data'] = tcc_calc.apply(lambda row: 1 if row['MD'] == 'MD' and "CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']) else 0, axis=1)
+    tcc_calc['Flag_CTT_Data'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and "CÓ DỮ LIỆU" in safe_str(row['STT_CTT']) else 0, axis=1)
 
     summary_tcc = tcc_calc.groupby('MA_DVIQLY').agg(
-        Tong_Tram_CC=('MA_SO', 'count'),            
-        CTT_Co_Do_Xa=('Count_Is_CTT', 'sum'),        
-        MD_Co_Du_Lieu=('Count_MD_Has_Data', 'sum'),  
-        CTT_Co_Status=('Count_CTT_Has_Data', 'sum'),
-        Modem_Offline=('Count_MD_Offline', 'sum')
+        Tong_Tram=('MA_SO', 'count'),
+        So_Tram_MD=('Flag_MD', 'sum'),
+        So_Tram_DCU=('Flag_DCU', 'sum'),
+        CTT_RS485=('Flag_RS485', 'sum'),
+        CTT_RS232=('Flag_RS232', 'sum'),
+        CTT_GPRS=('Flag_GPRS', 'sum'),
+        CTT_PLC=('Flag_PLC', 'sum'),
+        Do_Qua_DCU=('Flag_Do_Qua_DCU', 'sum'), 
+        Modem_Co_Du_Lieu=('Flag_Modem_Data', 'sum'),
+        CTT_Co_Du_Lieu=('Flag_CTT_Data', 'sum')
     ).fillna(0).astype(int)
     
-    summary_tcc['CTT_Chua_Do_Xa'] = summary_tcc['CTT_Co_Do_Xa'] - summary_tcc['MD_Co_Du_Lieu']
-    summary_tcc['CTT_Chua_Do_Xa'] = summary_tcc['CTT_Chua_Do_Xa'].clip(lower=0)
-    
-    summary_tcc['Numerator'] = summary_tcc['CTT_Co_Status'] + summary_tcc['MD_Co_Du_Lieu']
-    summary_tcc['Denominator'] = summary_tcc['CTT_Co_Do_Xa'] + summary_tcc['MD_Co_Du_Lieu'] + summary_tcc['Modem_Offline']
-    
-    summary_tcc['Ty_Le'] = summary_tcc.apply(
-        lambda x: (x['Numerator'] / x['Denominator'] * 100) if x['Denominator'] > 0 else 0, 
-        axis=1
-    )
-    summary_tcc = summary_tcc.drop(columns=['Numerator', 'Denominator'])
-    
     summary_tcc.columns = [
-        'Tổng số trạm CC', 'Tổng CTT', 'MD có dữ liệu', 'CTT có trạng thái DL',
-        'Modem Offline', 'CTT chưa đo xa', 'Tỷ lệ thu thập (%)'
+        'Tổng số trạm', 'Số trạm thu thập qua modem', 'Số trạm thu thập qua DCU',
+        'Số trường hợp CTT thu thập qua RS485', 'CTT thu thập qua RS232', 'CTT thu thập qua GPRS',
+        'CTT thu thập qua PLC', 'Đo qua DCU', 'Modem có dữ liệu', 'CTT có dữ liệu'
     ]
     
     total_tcc = summary_tcc.sum(numeric_only=True)
     total_tcc.name = 'TỔNG CỘNG'
-    
-    num_total = total_tcc['CTT có trạng thái DL'] + total_tcc['MD có dữ liệu']
-    den_total = total_tcc['Tổng CTT'] + total_tcc['MD có dữ liệu'] + total_tcc['Modem Offline']
-    total_tcc['Tỷ lệ thu thập (%)'] = (num_total / den_total * 100) if den_total > 0 else 0
-    
     summary_tcc = pd.concat([summary_tcc, total_tcc.to_frame().T])
     summary_tcc = summary_tcc.reset_index().rename(columns={'index': 'Đơn Vị'})
 
@@ -169,6 +168,7 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
         'MA_CLOAI': 'MÃ CHỦNG LOẠI', 
         'STT_MODEM': 'TRẠNG THÁI MODEM', 
         'STT_CTT': 'GHI CHÚ DỮ LIỆU CTT', 
+        'STT_DCU': 'TRẠNG THÁI DCU',
         'CTT': 'DANH SÁCH CTT',
         'MD': 'CÓ MD', 
         'DCU': 'CÓ DCU',
@@ -190,7 +190,6 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
         fmt_header = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#D3D3D3', 'align': 'center', 'valign': 'vcenter'})
         fmt_sum_header_tcd = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#4472C4', 'font_color': 'white', 'align': 'center', 'valign': 'vcenter'})
         fmt_sum_header_tcc = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#70AD47', 'font_color': 'white', 'align': 'center', 'valign': 'vcenter'})
-        fmt_percent = workbook.add_format({'num_format': '0.00'})
 
         def write_detail(df_in, name, drop_cols=None):
             if df_in is None: return
@@ -217,7 +216,6 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'có dữ liệu', 'format': fmt_green})
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'CTT chưa thu thập', 'format': fmt_blue})
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Lỗi CTT', 'format': fmt_purple})
-                
                 ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Thu hồi Modem', 'format': fmt_grey})
                 
                 if "TRẠNG THÁI MODEM" in df_display.columns:
@@ -231,6 +229,12 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
                     L_ctt = chr(65 + col_idx_ctt)
                     R_ctt = f"{L_ctt}2:{L_ctt}{len(df_display)+1}"
                     ws.conditional_format(R_ctt, {'type': 'text', 'criteria': 'containing', 'value': 'Có dữ liệu', 'format': fmt_green})
+                    
+                if "TRẠNG THÁI DCU" in df_display.columns:
+                    col_idx_dcu = df_display.columns.get_loc("TRẠNG THÁI DCU")
+                    L_dcu = chr(65 + col_idx_dcu)
+                    R_dcu = f"{L_dcu}2:{L_dcu}{len(df_display)+1}"
+                    ws.conditional_format(R_dcu, {'type': 'text', 'criteria': 'containing', 'value': 'Có dữ liệu', 'format': fmt_green})
             except: pass
 
         write_detail(df_tcd, 'ChuyenDung', drop_cols=['STT_CTT'])
@@ -249,8 +253,6 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
             for i, c in enumerate(sum_tcc.columns):
                 ws.write(0, i, c, fmt_sum_header_tcc)
                 ws.set_column(i, i, 20)
-            last_col_idx = len(sum_tcc.columns) - 1
-            ws.set_column(last_col_idx, last_col_idx, 15, fmt_percent)
 
     return output.getvalue()
 
@@ -258,7 +260,8 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
 st.title("⚡ Tool SFW V77 (Strict Modem Offline Count)")
 
 st.markdown("### ⚙️ Cấu hình bộ lọc")
-ma_dvi_filter = st.text_input("🔍 Nhập Mã Đơn Vị cần lọc (VD: PB06, PB0606... Để trống để tổng hợp tất cả):", value="PB06").strip().upper()
+# Đã đổi giá trị mặc định thành khoảng PB0501 đến PB0614
+ma_dvi_filter = st.text_input("🔍 Nhập Mã Đơn Vị cần lọc (VD: PB0501-PB0614, hoặc mã cụ thể):", value="PB0501-PB0614").strip().upper()
 st.markdown("---")
 
 c1, c2 = st.columns([1, 1.2])
@@ -271,7 +274,7 @@ with c2:
     f_md = st.file_uploader("1. Modem All", type=['xlsx','csv'])
     
     st.markdown("---")
-    f_data_modem = st.file_uploader("2a. Dữ Liệu MODEM", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
+    f_data_modem = st.file_uploader("2a. Dữ Liệu MODEM / DCU", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
     f_data_ctt = st.file_uploader("2b. Dữ Liệu CTT", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
     st.markdown("---")
     
@@ -299,7 +302,6 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
         if c_md:
             for _, row in df_md.iterrows():
                 md_code = get_left_13(row[c_md])
-                # Fix: Chỉ thêm vào dict nếu md_code có giá trị
                 if md_code != "":
                     dict_md_info[md_code] = {
                         'imei': safe_str(row[c_imei]) if c_imei else "",
@@ -318,7 +320,6 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
         if c_dc:
             for _, row in df_dc.iterrows():
                 dc_code = clean_station_code(row[c_dc])
-                # Fix: Chỉ xử lý nếu mã trạm khác rỗng
                 if dc_code != "":
                     val_sdt = safe_str(row[c_sdt_dc]) if c_sdt_dc else ""
                     dict_dc_sdt[dc_code] = val_sdt
@@ -334,11 +335,9 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
         if c1_ct and c_method:
             for _, row in df_ct.iterrows():
                 md_code = get_left_13(row[c1_ct])
-                # Fix: Tránh rỗng
                 if md_code != "":
                     dict_ct_method[md_code] = safe_str(row[c_method])
                 
-        # Fix: Trích xuất set CTT loại bỏ chuỗi rỗng
         s_ct1 = set(x for x in df_ct[c1_ct].apply(get_left_13) if x != "") if c1_ct else set()
         s_ct2 = set(x for x in df_ct[c2_ct].apply(clean_station_code) if x != "") if c2_ct else set()
 
@@ -393,14 +392,15 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
                 return "MD"
                 
             out['MD'] = k13.apply(evaluate_md)
-            # Fix: Check nếu ktram != "" trước khi check in s_dc
             out['DCU'] = ktram.apply(lambda x: "DCU" if x != "" and x in s_dc else "")
             
-            # Fix: Check nếu k và t != "" trước khi check in s_ct1, s_ct2
             out['CTT'] = [ "CTT" if (k != "" and k in s_ct1) or (t != "" and t in s_ct2) else "" for k, t in zip(k13, ktram) ]
             
             out['STT_MODEM'] = k13.map(dict_modem_full).fillna("")
             out['STT_CTT'] = k13.map(dict_ctt_full).fillna("")
+            
+            # Bổ sung trạng thái DCU vào bảng chi tiết (Ánh xạ từ dữ liệu Modem/DCU)
+            out['STT_DCU'] = k13.map(dict_modem_full).fillna("") 
             
             def status(row):
                 stt_md = safe_str(row['STT_MODEM'])
