@@ -128,7 +128,6 @@ def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
     tcc_calc['Flag_GPRS'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'GPRS' in safe_str(row['METHOD_CTT']) else 0, axis=1)
     tcc_calc['Flag_PLC'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'PLC' in safe_str(row['METHOD_CTT']) else 0, axis=1)
     
-    # Logic: Đo qua DCU = Cột DCU là 'DCU' VÀ Phương thức CTT trống
     tcc_calc['Flag_Do_Qua_DCU'] = tcc_calc.apply(lambda row: 1 if row['DCU'] == 'DCU' and safe_str(row['METHOD_CTT']) == "" else 0, axis=1)
     
     tcc_calc['Flag_Modem_Data'] = tcc_calc.apply(lambda row: 1 if row['MD'] == 'MD' and "CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']) else 0, axis=1)
@@ -260,7 +259,6 @@ def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
 st.title("⚡ Tool SFW V77 (Strict Modem Offline Count)")
 
 st.markdown("### ⚙️ Cấu hình bộ lọc")
-# Đã đổi giá trị mặc định thành khoảng PB0501 đến PB0614
 ma_dvi_filter = st.text_input("🔍 Nhập Mã Đơn Vị cần lọc (VD: PB0501-PB0614, hoặc mã cụ thể):", value="PB0501-PB0614").strip().upper()
 st.markdown("---")
 
@@ -274,7 +272,7 @@ with c2:
     f_md = st.file_uploader("1. Modem All", type=['xlsx','csv'])
     
     st.markdown("---")
-    f_data_modem = st.file_uploader("2a. Dữ Liệu MODEM / DCU", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
+    f_data_modem = st.file_uploader("2a. Dữ Liệu MODEM", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
     f_data_ctt = st.file_uploader("2b. Dữ Liệu CTT", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
     st.markdown("---")
     
@@ -399,8 +397,9 @@ if st.button("🚀 XỬ LÝ NGAY", type="primary"):
             out['STT_MODEM'] = k13.map(dict_modem_full).fillna("")
             out['STT_CTT'] = k13.map(dict_ctt_full).fillna("")
             
-            # Bổ sung trạng thái DCU vào bảng chi tiết (Ánh xạ từ dữ liệu Modem/DCU)
-            out['STT_DCU'] = k13.map(dict_modem_full).fillna("") 
+            # --- ĐÃ SỬA LẠI DÒNG NÀY ---
+            # Trạng thái DCU (có dữ liệu hay không) sẽ được ánh xạ chính xác từ file Dữ Liệu CTT (dict_ctt_full)
+            out['STT_DCU'] = k13.map(dict_ctt_full).fillna("") 
             
             def status(row):
                 stt_md = safe_str(row['STT_MODEM'])
