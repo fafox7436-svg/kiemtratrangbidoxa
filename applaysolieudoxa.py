@@ -1,441 +1,222 @@
 import streamlit as st
 import pandas as pd
 import io
-import os
 
-# ================= 1. CẤU HÌNH =================
-st.set_page_config(page_title="Tool SFW V77 - TCC & TCD Summaries", layout="wide")
+st.set_page_config(page_title="Đánh Giá Tỷ Lệ Đo Xa (Logic Mới)", layout="wide")
 
-# ================= 2. HÀM HỖ TRỢ =================
-def safe_str(val):
-    if pd.isna(val) or val is None: return ""
-    s = str(val).strip().upper()
-    if s.endswith(".0"): s = s[:-2]
-    return s
+# ================= 1. HÀM HỖ TRỢ =================
+def clean_mdd(val):
+    if pd.isna(val): return ""
+    return str(val).strip().upper()
 
-def clean_station_code(val):
-    s = safe_str(val)
-    if s.startswith("PB"): s = s[2:]
-    s = s.lstrip('0')
-    return s
+def check_dcu_data(row, col_ngaygio, col_import):
+    """Đánh giá xem điểm đo DCU có dữ liệu hay không dựa vào NGAYGIO và IMPORT"""
+    ngaygio = str(row.get(col_ngaygio, "")).strip()
+    imp = str(row.get(col_import, "")).strip()
+    if ngaygio and ngaygio.lower() != 'nan' and imp and imp.lower() != 'nan':
+        return 1
+    return 0
 
-def get_left_13(val):
-    return safe_str(val)[:13]
-
-def find_header_row_and_read(file_obj, keywords):
-    if file_obj is None: return None, 0
-    try:
-        file_obj.seek(0)
-        is_csv = file_obj.name.lower().endswith('.csv')
-        is_xls = file_obj.name.lower().endswith('.xls')
-        try:
-            if is_csv: df_preview = pd.read_csv(file_obj, header=None, nrows=15, dtype=str)
-            elif is_xls: df_preview = pd.read_excel(file_obj, header=None, nrows=15, dtype=str, engine='xlrd')
-            else: df_preview = pd.read_excel(file_obj, header=None, nrows=15, dtype=str)
-        except: return None, 0
-        
-        header_row_idx = 0
-        found = False
-        for i, row in df_preview.iterrows():
-            row_text = " ".join([str(x).upper() for x in row.values])
-            for kw in keywords:
-                if kw.upper() in row_text:
-                    header_row_idx = i
-                    found = True; break
-            if found: break
-        
-        file_obj.seek(0)
-        if is_csv: df = pd.read_csv(file_obj, header=header_row_idx, dtype=str)
-        elif is_xls: df = pd.read_excel(file_obj, header=header_row_idx, dtype=str, engine='xlrd')
-        else: df = pd.read_excel(file_obj, header=header_row_idx, dtype=str)
-        df.columns = [str(c).strip().upper() for c in df.columns]
-        return df, header_row_idx
-    except: return None, 0
-
-def find_col(df, keywords):
-    if df is None: return None
+def find_column(df, keywords):
     for kw in keywords:
         for col in df.columns:
-            if kw in col: return col
+            if kw.upper() in str(col).upper(): return col
     return None
 
-def load_data_full_dict(file_list):
-    result_dict = {}
-    if not file_list: return result_dict
-    for f in file_list:
-        df_tmp, _ = find_header_row_and_read(f, ["MADIEMDO", "MÃ ĐIỂM ĐO", "Mã điểm đo"])
-        if df_tmp is not None:
-            c_ma = find_col(df_tmp, ["MADIEMDO", "MÃ ĐIỂM ĐO", "Mã điểm đo"])
-            c_tt = find_col(df_tmp, ["TRANGTHAI", "TRẠNG THÁI", "Trạng thái"])
-            if c_ma and c_tt:
-                for index, row in df_tmp.iterrows():
-                    code = get_left_13(row[c_ma])
-                    if code != "":
-                        status = str(row[c_tt]).strip()
-                        result_dict[code] = status
-    return result_dict
+# ================= 2. GIAO DIỆN TẢI FILE =================
+st.title("⚡ Tool Đánh Giá Đo Xa - Phân Tích Cấu Trúc Lưới")
 
-# ================= 3. LOGIC TỔNG HỢP V77 =================
-def create_summaries(df_tcd, df_tcc, ma_dvi_filter):
-    # Hỗ trợ lọc theo khoảng (VD: PB0501-PB0614)
-    if ma_dvi_filter:
-        if "-" in ma_dvi_filter:
-            start_dvi, end_dvi = [x.strip() for x in ma_dvi_filter.split("-")]
-            tcd_calc = df_tcd[(df_tcd['MA_DVIQLY'] >= start_dvi) & (df_tcd['MA_DVIQLY'] <= end_dvi)].copy()
-            tcc_calc = df_tcc[(df_tcc['MA_DVIQLY'] >= start_dvi) & (df_tcc['MA_DVIQLY'] <= end_dvi)].copy()
-        else:
-            tcd_calc = df_tcd[df_tcd['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
-            tcc_calc = df_tcc[df_tcc['MA_DVIQLY'].astype(str).str.startswith(ma_dvi_filter)].copy()
-    else:
-        tcd_calc = df_tcd.copy()
-        tcc_calc = df_tcc.copy()
-    
-    # === 1. TỔNG HỢP TCD ===
-    tcd_calc['Flag_MD'] = tcd_calc['MD'].apply(lambda x: 1 if x == 'MD' else 0)
-    tcd_calc['Flag_DCU'] = tcd_calc['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
-    tcd_calc['Flag_Chua_Khai_Bao'] = tcd_calc['NHAN_XET'].apply(lambda x: 1 if "Chưa khai báo" in str(x) else 0)
-    
-    tcd_calc['Flag_Modem_Data'] = tcd_calc.apply(lambda row: 1 if row['MD'] == 'MD' and "CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']) else 0, axis=1)
-    tcd_calc['Flag_DCU_Data'] = tcd_calc.apply(lambda row: 1 if row['DCU'] == 'DCU' and "CÓ DỮ LIỆU" in safe_str(row['STT_DCU']) else 0, axis=1)
-
-    summary_tcd = tcd_calc.groupby('MA_DVIQLY').agg(
-        Tong_Tram=('MA_SO', 'count'),
-        So_Tram_MD=('Flag_MD', 'sum'),
-        So_Tram_DCU=('Flag_DCU', 'sum'),
-        Chua_Khai_Bao=('Flag_Chua_Khai_Bao', 'sum'),
-        Modem_Co_Du_Lieu=('Flag_Modem_Data', 'sum'),
-        DCU_Co_Du_Lieu=('Flag_DCU_Data', 'sum')
-    ).fillna(0).astype(int)
-
-    summary_tcd.columns = [
-        'Tổng số trạm', 'Số trạm thu thập modem', 'Trạm thu thập qua DCU', 
-        'Số trạm chưa khai báo', 'Số modem có dữ liệu', 'Số DCU có dữ liệu'
-    ]
-    
-    total_tcd = summary_tcd.sum(numeric_only=True)
-    total_tcd.name = 'TỔNG CỘNG'
-    summary_tcd = pd.concat([summary_tcd, total_tcd.to_frame().T])
-    summary_tcd = summary_tcd.reset_index().rename(columns={'index': 'Đơn Vị'})
-
-    # === 2. TỔNG HỢP TCC ===
-    tcc_calc = tcc_calc[tcc_calc['LOAI_TRAM'] == 'CC'].copy()
-    
-    tcc_calc['Flag_MD'] = tcc_calc['MD'].apply(lambda x: 1 if x == 'MD' else 0)
-    tcc_calc['Flag_DCU'] = tcc_calc['DCU'].apply(lambda x: 1 if x == 'DCU' else 0)
-    
-    tcc_calc['Flag_RS485'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'RS485' in safe_str(row['METHOD_CTT']) else 0, axis=1)
-    tcc_calc['Flag_RS232'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'RS232' in safe_str(row['METHOD_CTT']) else 0, axis=1)
-    tcc_calc['Flag_GPRS'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'GPRS' in safe_str(row['METHOD_CTT']) else 0, axis=1)
-    tcc_calc['Flag_PLC'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and 'PLC' in safe_str(row['METHOD_CTT']) else 0, axis=1)
-    
-    tcc_calc['Flag_Do_Qua_DCU'] = tcc_calc.apply(lambda row: 1 if row['DCU'] == 'DCU' and safe_str(row['METHOD_CTT']) == "" else 0, axis=1)
-    
-    tcc_calc['Flag_Modem_Data'] = tcc_calc.apply(lambda row: 1 if row['MD'] == 'MD' and "CÓ DỮ LIỆU" in safe_str(row['STT_MODEM']) else 0, axis=1)
-    tcc_calc['Flag_CTT_Data'] = tcc_calc.apply(lambda row: 1 if row['CTT'] == 'CTT' and "CÓ DỮ LIỆU" in safe_str(row['STT_CTT']) else 0, axis=1)
-
-    summary_tcc = tcc_calc.groupby('MA_DVIQLY').agg(
-        Tong_Tram=('MA_SO', 'count'),
-        So_Tram_MD=('Flag_MD', 'sum'),
-        So_Tram_DCU=('Flag_DCU', 'sum'),
-        CTT_RS485=('Flag_RS485', 'sum'),
-        CTT_RS232=('Flag_RS232', 'sum'),
-        CTT_GPRS=('Flag_GPRS', 'sum'),
-        CTT_PLC=('Flag_PLC', 'sum'),
-        Do_Qua_DCU=('Flag_Do_Qua_DCU', 'sum'), 
-        Modem_Co_Du_Lieu=('Flag_Modem_Data', 'sum'),
-        CTT_Co_Du_Lieu=('Flag_CTT_Data', 'sum')
-    ).fillna(0).astype(int)
-    
-    summary_tcc.columns = [
-        'Tổng số trạm', 'Số trạm thu thập qua modem', 'Số trạm thu thập qua DCU',
-        'Số trường hợp CTT thu thập qua RS485', 'CTT thu thập qua RS232', 'CTT thu thập qua GPRS',
-        'CTT thu thập qua PLC', 'Đo qua DCU', 'Modem có dữ liệu', 'CTT có dữ liệu'
-    ]
-    
-    total_tcc = summary_tcc.sum(numeric_only=True)
-    total_tcc.name = 'TỔNG CỘNG'
-    summary_tcc = pd.concat([summary_tcc, total_tcc.to_frame().T])
-    summary_tcc = summary_tcc.reset_index().rename(columns={'index': 'Đơn Vị'})
-
-    return summary_tcd, summary_tcc
-
-# ================= 4. XUẤT EXCEL =================
-def to_excel_4_sheets(df_tcd, df_tcc, sum_tcd, sum_tcc):
-    output = io.BytesIO()
-    rename_dict = {
-        'MA_SO': 'MÃ KH/ĐĐ', 
-        'MA_CLOAI': 'MÃ CHỦNG LOẠI', 
-        'STT_MODEM': 'TRẠNG THÁI MODEM', 
-        'STT_CTT': 'GHI CHÚ DỮ LIỆU CTT', 
-        'STT_DCU': 'TRẠNG THÁI DCU',
-        'CTT': 'DANH SÁCH CTT',
-        'MD': 'CÓ MD', 
-        'DCU': 'CÓ DCU',
-        'IMEI_MD': 'IMEI (MODEM)',
-        'METHOD_CTT': 'PHƯƠNG THỨC CTT',
-        'SERIAL_SIM': 'SERIAL SIM',
-        'SDT_SIM': 'SĐT SIM'
-    }
-
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        workbook = writer.book
-        fmt_red = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
-        fmt_yellow = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C6500'})
-        fmt_green = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
-        fmt_blue = workbook.add_format({'bg_color': '#BDD7EE', 'font_color': '#000000'})
-        fmt_purple = workbook.add_format({'bg_color': '#E4C7FA', 'font_color': '#333333'})
-        fmt_grey = workbook.add_format({'bg_color': '#D9D9D9', 'font_color': '#595959', 'italic': True})
-        
-        fmt_header = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#D3D3D3', 'align': 'center', 'valign': 'vcenter'})
-        fmt_sum_header_tcd = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#4472C4', 'font_color': 'white', 'align': 'center', 'valign': 'vcenter'})
-        fmt_sum_header_tcc = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#70AD47', 'font_color': 'white', 'align': 'center', 'valign': 'vcenter'})
-
-        def write_detail(df_in, name, drop_cols=None):
-            if df_in is None: return
-            df_temp = df_in.copy()
-            if drop_cols: df_temp = df_temp.drop(columns=drop_cols, errors='ignore')
-            
-            cols = list(df_temp.columns)
-            if 'NHAN_XET' in cols:
-                cols.insert(1, cols.pop(cols.index('NHAN_XET')))
-            df_temp = df_temp[cols]
-
-            df_display = df_temp.rename(columns=rename_dict)
-            df_display.to_excel(writer, index=False, sheet_name=name)
-            ws = writer.sheets[name]
-            for i, c in enumerate(df_display.columns):
-                ws.write(0, i, c, fmt_header)
-                ws.set_column(i, i, 22)
-            try:
-                col_idx = df_display.columns.get_loc("NHAN_XET")
-                L = chr(65 + col_idx)
-                R = f"{L}2:{L}{len(df_display)+1}"
-                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Chưa khai báo', 'format': fmt_red})
-                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Modem Offline', 'format': fmt_yellow})
-                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'có dữ liệu', 'format': fmt_green})
-                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'CTT chưa thu thập', 'format': fmt_blue})
-                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Lỗi CTT', 'format': fmt_purple})
-                ws.conditional_format(R, {'type': 'text', 'criteria': 'containing', 'value': 'Thu hồi Modem', 'format': fmt_grey})
-                
-                if "TRẠNG THÁI MODEM" in df_display.columns:
-                    col_idx_md = df_display.columns.get_loc("TRẠNG THÁI MODEM")
-                    L_md = chr(65 + col_idx_md)
-                    R_md = f"{L_md}2:{L_md}{len(df_display)+1}"
-                    ws.conditional_format(R_md, {'type': 'text', 'criteria': 'containing', 'value': 'Có dữ liệu', 'format': fmt_green})
-                
-                if "GHI CHÚ DỮ LIỆU CTT" in df_display.columns:
-                    col_idx_ctt = df_display.columns.get_loc("GHI CHÚ DỮ LIỆU CTT")
-                    L_ctt = chr(65 + col_idx_ctt)
-                    R_ctt = f"{L_ctt}2:{L_ctt}{len(df_display)+1}"
-                    ws.conditional_format(R_ctt, {'type': 'text', 'criteria': 'containing', 'value': 'Có dữ liệu', 'format': fmt_green})
-                    
-                if "TRẠNG THÁI DCU" in df_display.columns:
-                    col_idx_dcu = df_display.columns.get_loc("TRẠNG THÁI DCU")
-                    L_dcu = chr(65 + col_idx_dcu)
-                    R_dcu = f"{L_dcu}2:{L_dcu}{len(df_display)+1}"
-                    ws.conditional_format(R_dcu, {'type': 'text', 'criteria': 'containing', 'value': 'Có dữ liệu', 'format': fmt_green})
-            except: pass
-
-        write_detail(df_tcd, 'ChuyenDung', drop_cols=['STT_CTT'])
-        write_detail(df_tcc, 'NoiBo')
-
-        if sum_tcd is not None:
-            sum_tcd.to_excel(writer, index=False, sheet_name='TongHop_TCD')
-            ws = writer.sheets['TongHop_TCD']
-            for i, c in enumerate(sum_tcd.columns):
-                ws.write(0, i, c, fmt_sum_header_tcd)
-                ws.set_column(i, i, 18)
-
-        if sum_tcc is not None:
-            sum_tcc.to_excel(writer, index=False, sheet_name='TongHop_TCC')
-            ws = writer.sheets['TongHop_TCC']
-            for i, c in enumerate(sum_tcc.columns):
-                ws.write(0, i, c, fmt_sum_header_tcc)
-                ws.set_column(i, i, 20)
-
-    return output.getvalue()
-
-# ================= 5. GIAO DIỆN CHÍNH =================
-st.title("⚡ Tool SFW V77 (Strict Modem Offline Count)")
-
-st.markdown("### ⚙️ Cấu hình bộ lọc")
-ma_dvi_filter = st.text_input("🔍 Nhập Mã Đơn Vị cần lọc (VD: PB0501-PB0614, hoặc mã cụ thể):", value="PB0501-PB0614").strip().upper()
-st.markdown("---")
-
-c1, c2 = st.columns([1, 1.2])
+c1, c2, c3 = st.columns(3)
 with c1:
-    st.header("1. File Input")
-    f_tcd = st.file_uploader("📂 File TCD", type=['xlsx','csv'])
-    f_tcc = st.file_uploader("📂 File TCC", type=['xlsx','csv'])
+    st.markdown("**1. Danh sách Khách Hàng (CMIS)**")
+    f_tcc = st.file_uploader("📂 Danh sách TCC", type=['xlsx', 'csv'])
+    f_tcd = st.file_uploader("📂 Danh sách TCD", type=['xlsx', 'csv'])
+    f_cmis_sautcc = st.file_uploader("📂 File CMIS Khách hàng sau TCC", type=['xlsx', 'csv'])
+
 with c2:
-    st.header("2. Dữ Liệu & Hệ Thống")
-    f_md = st.file_uploader("1. Modem All", type=['xlsx','csv'])
-    
-    st.markdown("---")
-    f_data_modem = st.file_uploader("2a. Dữ Liệu MODEM", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
-    f_data_ctt = st.file_uploader("2b. Dữ Liệu CTT", type=['xlsx','csv', 'xls'], accept_multiple_files=True)
-    st.markdown("---")
-    
-    f_dc = st.file_uploader("3. DCU All", type=['xlsx','csv'])
-    f_ct = st.file_uploader("4. CTT All", type=['xlsx','csv'])
+    st.markdown("**2. Nguồn khai thác (DCU)**")
+    f_dcu = st.file_uploader("📻 File DCU (PB05, PB06...)", accept_multiple_files=True)
 
-if st.button("🚀 XỬ LÝ NGAY", type="primary"):
-    if not (f_md and f_data_modem and f_data_ctt and f_dc and f_ct and f_tcd and f_tcc):
-        st.error("Thiếu file!"); st.stop()
+with c3:
+    st.markdown("**3. Nguồn khai thác (Modem)**")
+    f_md = st.file_uploader("📡 File Modem (EVNHES)", accept_multiple_files=True)
 
-    try:
-        dict_modem_full = load_data_full_dict(f_data_modem) 
-        dict_ctt_full = load_data_full_dict(f_data_ctt)
-        st.success(f"✅ Đã tải dữ liệu.")
+if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
+    if not (f_tcc and f_tcd and f_dcu and f_md and f_cmis_sautcc):
+        st.error("⚠️ Vui lòng tải đầy đủ các file dữ liệu để chạy phân tích!")
+        st.stop()
 
-        # --- XỬ LÝ FILE 1: MODEM ALL ---
-        df_md, _ = find_header_row_and_read(f_md, ["MADIEMDO"])
-        c_md = find_col(df_md, ["MADIEMDO"])
-        c_imei = find_col(df_md, ["IMEI"])
-        c_serialid = find_col(df_md, ["SERIALID"])
-        c_metertype = find_col(df_md, ["METERTYPE"])
-        c_sim_md = find_col(df_md, ["SERIALSIM", "SERIAL_SIM"])
+    with st.spinner("Đang bóc tách và đối chiếu dữ liệu..."):
+        # --- BƯỚC 1: XÂY DỰNG TỪ ĐIỂN ---
         
-        dict_md_info = {}
-        if c_md:
-            for _, row in df_md.iterrows():
-                md_code = get_left_13(row[c_md])
-                if md_code != "":
-                    dict_md_info[md_code] = {
-                        'imei': safe_str(row[c_imei]) if c_imei else "",
-                        'serial': safe_str(row[c_serialid]) if c_serialid else "",
-                        'metertype': safe_str(row[c_metertype]) if c_metertype else "",
-                        'sim': safe_str(row[c_sim_md]) if c_sim_md else ""
-                    }
-        s_md = set(dict_md_info.keys())
+        # 1.1 TCD Gốc
+        df_tcd_goc = pd.read_excel(f_tcd, dtype=str)
+        col_makh_tcd = find_column(df_tcd_goc, ["MA_KHANG", "MA_DDO", "MÃ KHÁCH HÀNG"])
+        set_tcd_makh = set(df_tcd_goc[col_makh_tcd].dropna().apply(clean_mdd)) if col_makh_tcd else set()
 
-        # --- XỬ LÝ FILE 3: DCU ALL ---
-        df_dc, _ = find_header_row_and_read(f_dc, ["MATRAM"])
-        c_dc = find_col(df_dc, ["MATRAM"])
-        c_sdt_dc = find_col(df_dc, ["SDT_SIM", "SDTSIM", "SĐT"])
+        # 1.2 DCU
+        dict_dcu = {} 
+        for f in f_dcu:
+            df_d = pd.read_excel(f, dtype=str)
+            c_mdd_dcu = find_column(df_d, ["MADIEMDO", "MÃ ĐIỂM ĐO"])
+            c_ngaygio = find_column(df_d, ["NGAYGIO", "NGÀY GIỜ", "THỜI GIAN"])
+            c_import = find_column(df_d, ["IMPORT"])
+            
+            if c_mdd_dcu:
+                for _, row in df_d.iterrows():
+                    mdd = clean_mdd(row[c_mdd_dcu])
+                    if mdd:
+                        dict_dcu[mdd] = {
+                            'nguon': 'DCU',
+                            'co_du_lieu': check_dcu_data(row, c_ngaygio, c_import)
+                        }
+
+        # 1.3 Modem
+        dict_md = {}
+        for f in f_md:
+            df_m = pd.read_excel(f, dtype=str)
+            c_mdd_md = find_column(df_m, ["MADIEMDO", "MÃ ĐIỂM ĐO"])
+            c_tt_md = find_column(df_m, ["TRANGTHAI", "TRẠNG THÁI"])
+            if c_mdd_md and c_tt_md:
+                for _, row in df_m.iterrows():
+                    mdd = clean_mdd(row[c_mdd_md])
+                    if mdd:
+                        status = str(row[c_tt_md]).upper()
+                        dict_md[mdd] = {
+                            'nguon': 'MD',
+                            'co_du_lieu': 1 if "CÓ DỮ LIỆU" in status else 0
+                        }
+
+        # 1.4 KH Sau TCC (Lấy số lượng CMIS)
+        df_cmis_sau = pd.read_excel(f_cmis_sautcc, dtype=str)
+        c_dvi_cmis = find_column(df_cmis_sau, ["MA_DVIQLY", "MÃ ĐƠN VỊ"])
+        c_sl_cmis = find_column(df_cmis_sau, ["SO_LUONG", "SỐ LƯỢNG", "CMIS"])
+        dict_cmis_sl = dict(zip(df_cmis_sau[c_dvi_cmis].apply(clean_mdd), pd.to_numeric(df_cmis_sau[c_sl_cmis], errors='coerce').fillna(0))) if (c_dvi_cmis and c_sl_cmis) else {}
+
+        # --- BƯỚC 2: QUÉT DIỆN RỘNG NHẬN DIỆN CTT & PHÂN LOẠI TCC ---
+        df_tcc = pd.read_excel(f_tcc, dtype=str)
+        c_makh_tcc = find_column(df_tcc, ["MA_KHANG", "MA_DDO", "MÃ ĐIỂM ĐO"])
+        c_dvi_tcc = find_column(df_tcc, ["MA_DVIQLY"])
         
-        dict_dc_sdt = {}
-        if c_dc:
-            for _, row in df_dc.iterrows():
-                dc_code = clean_station_code(row[c_dc])
-                if dc_code != "":
-                    val_sdt = safe_str(row[c_sdt_dc]) if c_sdt_dc else ""
-                    dict_dc_sdt[dc_code] = val_sdt
-        s_dc = set(dict_dc_sdt.keys())
-
-        # --- XỬ LÝ FILE 4: CTT ALL ---
-        df_ct, _ = find_header_row_and_read(f_ct, ["MADIEMDO", "MATRAM", "TENTRAM"])
-        c1_ct = find_col(df_ct, ["MADIEMDO"])
-        c2_ct = find_col(df_ct, ["TENTRAM", "MATRAM"])
-        c_method = find_col(df_ct, ["METHOD", "PHƯƠNG THỨC", "PHUONG THUC"])
+        # Các cột bổ trợ để dò RS485
+        c_method_tcc = find_column(df_tcc, ["METHOD", "PHƯƠNG THỨC", "PHUONG THUC"])
+        c_ten_tcc = find_column(df_tcc, ["TEN_KHANG", "TÊN KHÁCH HÀNG", "TEN_DDO", "TÊN ĐIỂM ĐO"])
         
-        dict_ct_method = {}
-        if c1_ct and c_method:
-            for _, row in df_ct.iterrows():
-                md_code = get_left_13(row[c1_ct])
-                if md_code != "":
-                    dict_ct_method[md_code] = safe_str(row[c_method])
+        df_tcc['MA_CHUAN'] = df_tcc[c_makh_tcc].apply(clean_mdd) if c_makh_tcc else ""
+        df_tcc['MA_DVIQLY'] = df_tcc[c_dvi_tcc].apply(clean_mdd) if c_dvi_tcc else "UNKNOWN"
+        
+        def phan_loai_tcc(row):
+            ma_val = clean_mdd(row.get(c_makh_tcc, "")) if c_makh_tcc else ""
+            method_val = clean_mdd(row.get(c_method_tcc, "")) if c_method_tcc else ""
+            ten_val = clean_mdd(row.get(c_ten_tcc, "")) if c_ten_tcc else ""
+            
+            # Logic quét diện rộng RS485 (kiểm tra cả 3 cột)
+            if "RS485" in ma_val or "RS485" in method_val or "RS485" in ten_val:
+                return "CTT"
                 
-        s_ct1 = set(x for x in df_ct[c1_ct].apply(get_left_13) if x != "") if c1_ct else set()
-        s_ct2 = set(x for x in df_ct[c2_ct].apply(clean_station_code) if x != "") if c2_ct else set()
+            # Cắt mã 13 ký tự để soi với TCD phòng trường hợp mã có đuôi
+            ma_13 = ma_val[:13] 
+            if ma_val in set_tcd_makh or ma_13 in set_tcd_makh:
+                return "TCD"
+                
+            return "KH_SAU_TCC"
+            
+        df_tcc['PHAN_LOAI'] = df_tcc.apply(phan_loai_tcc, axis=1)
+        
+        # Bóc tách DataFrames
+        df_kh_sautcc = df_tcc[df_tcc['PHAN_LOAI'] == 'KH_SAU_TCC'].copy()
+        df_ctt = df_tcc[df_tcc['PHAN_LOAI'] == 'CTT'].copy()
+        df_tcd_bo_sung = df_tcc[df_tcc['PHAN_LOAI'] == 'TCD'].copy()
 
-        def process(f, type_):
-            df, _ = find_header_row_and_read(f, ["MA_KHANG", "MA_DDO", "MA_KHACH_HANG"])
-            if df is None: return None
-            
-            c_dvi = find_col(df, ["MA_DVIQLY"])
-            c_kh = find_col(df, ["MA_KHANG", "MA_DDO"])
-            c_tram = find_col(df, ["MA_TRAM"])
-            c_ten = find_col(df, ["TEN_KHANG", "TEN_DDO"])
-            c_loai = find_col(df, ["LOAI_TRAM"])
-            c_cloai = find_col(df, ["MA_CLOAI", "CHUNG_LOAI"])
-            
-            if not c_kh: return None
-            
-            out = pd.DataFrame()
-            out['MA_DVIQLY'] = df[c_dvi].apply(safe_str) if c_dvi else "UNKNOWN"
-            out['MA_SO'] = df[c_kh].apply(safe_str)
-            out['MA_CLOAI'] = df[c_cloai].apply(safe_str) if c_cloai else ""
-            out['MA_TRAM'] = df[c_tram].apply(safe_str) if c_tram else ""
-            out['TEN'] = df[c_ten].apply(safe_str) if c_ten else ""
-            out['LOAI_TRAM'] = df[c_loai].apply(safe_str) if c_loai else type_
-            
-            k13 = out['MA_SO'].apply(get_left_13)
-            ktram = out['MA_TRAM'].apply(clean_station_code)
-            
-            out['IMEI_MD'] = k13.apply(lambda x: dict_md_info.get(x, {}).get('imei', '') if x != "" else "")
-            out['METHOD_CTT'] = k13.apply(lambda x: dict_ct_method.get(x, "") if x != "" else "")
-            out['SERIAL_SIM'] = k13.apply(lambda x: dict_md_info.get(x, {}).get('sim', '') if x != "" else "")
-            out['SDT_SIM'] = ktram.apply(lambda x: dict_dc_sdt.get(x, "") if x != "" else "")
-            
-            def evaluate_md(code):
-                if code == "" or code not in s_md: return ""
-                
-                info = dict_md_info.get(code, {})
-                imei = info.get('imei', '')
-                serialid = info.get('serial', '')
-                metertype = info.get('metertype', '')
-                
-                is_empty_hardware = (
-                    (imei == "" or imei == "NAN") and 
-                    (serialid == "" or serialid == "NAN") and 
-                    (metertype == "" or metertype == "NAN")
-                )
-                
-                method_ctt = dict_ct_method.get(code, "").upper()
-                
-                if is_empty_hardware and "RS485" in method_ctt:
-                    return "Thu hồi"
-                    
-                return "MD"
-                
-            out['MD'] = k13.apply(evaluate_md)
-            out['DCU'] = ktram.apply(lambda x: "DCU" if x != "" and x in s_dc else "")
-            
-            out['CTT'] = [ "CTT" if (k != "" and k in s_ct1) or (t != "" and t in s_ct2) else "" for k, t in zip(k13, ktram) ]
-            
-            out['STT_MODEM'] = k13.map(dict_modem_full).fillna("")
-            out['STT_CTT'] = k13.map(dict_ctt_full).fillna("")
-            
-            # --- ĐÃ SỬA LẠI DÒNG NÀY ---
-            # Trạng thái DCU (có dữ liệu hay không) sẽ được ánh xạ chính xác từ file Dữ Liệu CTT (dict_ctt_full)
-            out['STT_DCU'] = k13.map(dict_ctt_full).fillna("") 
-            
-            def status(row):
-                stt_md = safe_str(row['STT_MODEM'])
-                method_ctt = row['METHOD_CTT']
-                
-                if row['MD'] == "Thu hồi":
-                    return f"Thu hồi Modem - Thu thập qua {method_ctt}"
-                
-                if row['CTT'] == "CTT": 
-                    return f"Công Tơ Tổng ({method_ctt})" if method_ctt else "Công Tơ Tổng"
-                
-                if "CÓ DỮ LIỆU" in stt_md: 
-                    return "Modem có dữ liệu"
-                
-                if row['MD'] == "MD":
-                    if row['STT_MODEM'] != "": return f"Modem Offline ({row['STT_MODEM']})"
-                    return "Modem Offline"
-                    
-                if row['DCU'] == "DCU": return "Đo qua DCU"
-                
-                return "Chưa khai báo"
+        # Gom chung TCD
+        df_tcd_goc['MA_CHUAN'] = df_tcd_goc[col_makh_tcd].apply(clean_mdd) if col_makh_tcd else ""
+        df_tcd_goc['MA_DVIQLY'] = df_tcd_goc[find_column(df_tcd_goc, ["MA_DVIQLY"])].apply(clean_mdd) if find_column(df_tcd_goc, ["MA_DVIQLY"]) else "UNKNOWN"
+        df_tcd_tong = pd.concat([df_tcd_goc, df_tcd_bo_sung], ignore_index=True).drop_duplicates(subset=['MA_CHUAN'])
 
-            out['NHAN_XET'] = out.apply(status, axis=1)
-            return out
+        # --- BƯỚC 3: ĐÁNH GIÁ LUỒNG ĐO XA ---
+        def danh_gia_do_xa(df_input):
+            if df_input.empty: 
+                df_input['NGUON_DOC'] = ""
+                df_input['CO_DU_LIEU'] = 0
+                return df_input
+                
+            def check_luong(mdd):
+                mdd_13 = mdd[:13] # Hỗ trợ map cả mã gốc lẫn mã cắt 13 ký tự
+                if mdd in dict_dcu: return dict_dcu[mdd]['nguon'], dict_dcu[mdd]['co_du_lieu']
+                if mdd_13 in dict_dcu: return dict_dcu[mdd_13]['nguon'], dict_dcu[mdd_13]['co_du_lieu']
+                
+                if mdd in dict_md: return dict_md[mdd]['nguon'], dict_md[mdd]['co_du_lieu']
+                if mdd_13 in dict_md: return dict_md[mdd_13]['nguon'], dict_md[mdd_13]['co_du_lieu']
+                
+                return 'CHƯA ĐO XA', 0
+                
+            ket_qua = df_input['MA_CHUAN'].apply(check_luong)
+            df_input['NGUON_DOC'] = [x[0] for x in ket_qua]
+            df_input['CO_DU_LIEU'] = [x[1] for x in ket_qua]
+            return df_input
 
-        tcd_final = process(f_tcd, "TCD")
-        tcc_final = process(f_tcc, "TCC")
+        df_kh_sautcc = danh_gia_do_xa(df_kh_sautcc)
+        df_tcd_tong = danh_gia_do_xa(df_tcd_tong)
+        df_ctt = danh_gia_do_xa(df_ctt)
 
-        if tcd_final is not None and tcc_final is not None:
-            sum_tcd, sum_tcc = create_summaries(tcd_final, tcc_final, ma_dvi_filter)
-            excel_bytes = to_excel_4_sheets(tcd_final, tcc_final, sum_tcd, sum_tcc)
-            st.success("✅ ĐÃ XONG!")
-            with st.expander(f"📊 Xem Tổng Hợp (Lọc theo: {ma_dvi_filter if ma_dvi_filter else 'TẤT CẢ'})"): 
-                st.dataframe(sum_tcc)
-            st.download_button("📥 TẢI KẾT QUẢ V77.xlsx", excel_bytes, "Ket_Qua_V77.xlsx", "primary")
-        else:
-            st.error("Lỗi xử lý file.")
+        # --- BƯỚC 4: TỔNG HỢP ---
+        danh_sach_don_vi = sorted(list(set(df_tcc['MA_DVIQLY'].unique()).union(df_tcd_tong['MA_DVIQLY'].unique())))
+        report_data = []
 
-    except Exception as e: st.error(f"Lỗi: {e}")
+        for dvi in danh_sach_don_vi:
+            kh_dv = df_kh_sautcc[df_kh_sautcc['MA_DVIQLY'] == dvi]
+            tcd_dv = df_tcd_tong[df_tcd_tong['MA_DVIQLY'] == dvi]
+            ctt_dv = df_ctt[df_ctt['MA_DVIQLY'] == dvi]
+
+            # 1. KH Sau TCC
+            cmis_sau_tcc = dict_cmis_sl.get(dvi, 0)
+            sl_khai_thac_dcu = len(kh_dv[kh_dv['NGUON_DOC'] == 'DCU']) 
+            sl_co_du_lieu_sautcc = kh_dv['CO_DU_LIEU'].sum()
+            tl_khai_thac = (sl_khai_thac_dcu / cmis_sau_tcc * 100) if cmis_sau_tcc > 0 else 0
+            tl_thu_thap_sautcc = (sl_co_du_lieu_sautcc / sl_khai_thac_dcu * 100) if sl_khai_thac_dcu > 0 else 0
+
+            # 2. TCD
+            tcd_doc_md = len(tcd_dv[tcd_dv['NGUON_DOC'] == 'MD'])
+            tcd_doc_dcu = len(tcd_dv[tcd_dv['NGUON_DOC'] == 'DCU'])
+            tcd_tong_khaithac = tcd_doc_md + tcd_doc_dcu
+            tcd_co_dulieu = tcd_dv['CO_DU_LIEU'].sum()
+            tcd_tyle = (tcd_co_dulieu / tcd_tong_khaithac * 100) if tcd_tong_khaithac > 0 else 0
+
+            # 3. CTT TCC
+            ctt_doc_md = len(ctt_dv[ctt_dv['NGUON_DOC'] == 'MD'])
+            ctt_doc_dcu = len(ctt_dv[ctt_dv['NGUON_DOC'] == 'DCU'])
+            ctt_tong_khaithac = ctt_doc_md + ctt_doc_dcu
+            ctt_co_dulieu = ctt_dv['CO_DU_LIEU'].sum()
+            ctt_tyle = (ctt_co_dulieu / ctt_tong_khaithac * 100) if ctt_tong_khaithac > 0 else 0
+
+            report_data.append({
+                "Mã đơn vị": dvi,
+                "SL KH sau TCC (CMIS)": cmis_sau_tcc,
+                "SL KH khai thác DCU": sl_khai_thac_dcu,
+                "Tỷ lệ khai thác (%)": round(tl_khai_thac, 2),
+                "KH DCU có dữ liệu": sl_co_du_lieu_sautcc,
+                "Tỷ lệ thu thập KH sau TCC (%)": round(tl_thu_thap_sautcc, 2),
+                "TCD - Đọc MD": tcd_doc_md,
+                "TCD - Đọc DCU": tcd_doc_dcu,
+                "TCD - Đã thu thập": tcd_co_dulieu,
+                "Tỷ lệ thu thập TCD (%)": round(tcd_tyle, 2),
+                "CTT - Đọc MD": ctt_doc_md,
+                "CTT - Đọc DCU": ctt_doc_dcu,
+                "CTT - Đã thu thập": ctt_co_dulieu,
+                "Tỷ lệ thu thập CTT (%)": round(ctt_tyle, 2)
+            })
+
+        df_report = pd.DataFrame(report_data)
+        
+        # --- XUẤT BÁO CÁO ---
+        st.success("✅ Phân tích hoàn tất! Đã bóc tách chính xác CTT theo mọi định dạng.")
+        st.dataframe(df_report, use_container_width=True)
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_report.to_excel(writer, index=False, sheet_name='TongHop')
+            df_kh_sautcc.to_excel(writer, index=False, sheet_name='KH_SauTCC')
+            df_tcd_tong.to_excel(writer, index=False, sheet_name='ChiTiet_TCD')
+            df_ctt.to_excel(writer, index=False, sheet_name='ChiTiet_CTT')
+            
+        st.download_button("📥 TẢI KẾT QUẢ PHÂN TÍCH (EXCEL)", data=output.getvalue(), file_name="Bao_Cao_Do_Xa_V2.xlsx", type="primary")
