@@ -37,38 +37,43 @@ def find_col(df, keywords):
     return None
 
 def load_dataframe(file_obj, keywords_to_find_header):
+    """Hàm đọc file thế hệ mới: Đọc 1 lần duy nhất, chống kẹt luồng file Streamlit, tìm header trong memory"""
     if file_obj is None: return None
     try:
-        file_obj.seek(0)
         is_csv = file_obj.name.lower().endswith('.csv')
         
+        # Đọc toàn bộ file 1 lần duy nhất
         if is_csv:
-            df_preview = pd.read_csv(file_obj, header=None, nrows=20, dtype=str)
+            df = pd.read_csv(file_obj, dtype=str)
         else:
-            df_preview = pd.read_excel(file_obj, header=None, nrows=20, dtype=str)
+            df = pd.read_excel(file_obj, dtype=str)
             
-        header_idx = 0
-        for i, row in df_preview.iterrows():
+        # Kịch bản 1: File đã chuẩn, header nằm ngay dòng đầu
+        col_str = " ".join([str(x).upper() for x in df.columns])
+        if any(clean_str(kw) in col_str for kw in keywords_to_find_header):
+            df.columns = [str(c).strip() for c in df.columns]
+            return df
+            
+        # Kịch bản 2: Header bị đẩy xuống dưới, ta duyệt 20 dòng đầu trong DataFrame để tìm
+        for i, row in df.head(20).iterrows():
             row_str = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
             if any(clean_str(kw) in row_str for kw in keywords_to_find_header):
-                header_idx = i
-                break
+                # Gán dòng này làm tên cột mới
+                df.columns = [str(c).strip() if pd.notna(c) else f"Unnamed_{j}" for j, c in enumerate(row.values)]
+                # Xóa các dòng rác phía trên header
+                df = df.iloc[i+1:].reset_index(drop=True)
+                return df
                 
-        file_obj.seek(0)
-        if is_csv:
-            df = pd.read_csv(file_obj, header=header_idx)
-        else:
-            df = pd.read_excel(file_obj, header=header_idx)
-            
+        # Nếu vẫn không tìm thấy, trả về df mặc định
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
-        st.error(f"Lỗi đọc file {file_obj.name}: {e}")
+        st.error(f"Lỗi hệ thống khi đọc file {file_obj.name}: {e}")
         return pd.DataFrame()
 
 # ================= 2. GIAO DIỆN TẢI FILE =================
 st.title("⚡ Tool Đánh Giá Đo Xa: Tính Toán Trực Tiếp Từ Nguồn Khai Thác")
-st.info("Phiên bản hỗ trợ xử lý dữ liệu siêu lớn (> 1 triệu công tơ)")
+st.info("Phiên bản Anti-Crash: Khắc phục lỗi đọc header và fix lỗi cộng chuỗi số liệu CMIS.")
 
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -90,7 +95,7 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         st.error("⚠️ Vui lòng tải đầy đủ các file theo 3 nhóm trên!")
         st.stop()
 
-    with st.spinner("Đang xây dựng ma trận phân tích và xử lý dữ liệu..."):
+    with st.spinner("Đang phân tích cấu trúc dữ liệu..."):
         
         # --- BƯỚC 1: XÂY DỰNG TẬP HỢP TCD VÀ CTT ---
         df_tcd = load_dataframe(f_tcd, ["MA_KHANG", "MA_DDO", "MÃ KHÁCH HÀNG", "MÃ ĐIỂM ĐO"])
@@ -114,12 +119,17 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
 
         # --- BƯỚC 2: ĐỌC DATAEXPORT CMIS ĐỂ TÍNH BASELINE ---
         df_export = load_dataframe(f_export, ["MA_DONVI", "MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
+        
+        # Thoát nếu DF lỗi đọc trống
+        if df_export is None or df_export.empty:
+            st.error("❌ Không thể nạp được dữ liệu từ file DataExport. Vui lòng thử lưu lại file thành định dạng .xlsx chuẩn.")
+            st.stop()
+            
         c_dvi_exp = find_col(df_export, ["MA_DONVI", "MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
         c_tong_ct = find_col(df_export, ["TONGCT", "TỔNG CÔNG TƠ", "TỔNG CT"])
         
-        # Cảnh báo chặn lỗi tính ra số âm nếu file bị sai cấu trúc
         if not c_dvi_exp or not c_tong_ct:
-            st.error("❌ Lỗi cấu trúc: Không tìm thấy cột 'MA_DONVI' hoặc 'TONGCT' trong file DataExport. Vui lòng kiểm tra lại file!")
+            st.error("❌ Lỗi cấu trúc: Không tìm thấy cột 'MA_DONVI' hoặc 'TONGCT' trong file DataExport.")
             st.stop()
             
         c_noibo_1p = find_col(df_export, ["NOIBO_1P", "NỘI BỘ 1P"]) or 'NOIBO_1P_TEMP'
@@ -127,6 +137,11 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         
         if c_noibo_1p == 'NOIBO_1P_TEMP': df_export['NOIBO_1P_TEMP'] = 0
         if c_noibo_3p == 'NOIBO_3P_TEMP': df_export['NOIBO_3P_TEMP'] = 0
+        
+        # QUAN TRỌNG: Ép kiểu dữ liệu về Numeric (Số) để tránh lỗi dồn chuỗi chữ gây ra số âm
+        df_export[c_tong_ct] = pd.to_numeric(df_export[c_tong_ct], errors='coerce').fillna(0)
+        df_export[c_noibo_1p] = pd.to_numeric(df_export[c_noibo_1p], errors='coerce').fillna(0)
+        df_export[c_noibo_3p] = pd.to_numeric(df_export[c_noibo_3p], errors='coerce').fillna(0)
                 
         export_agg = df_export.groupby(c_dvi_exp).agg(
             TONGCT=(c_tong_ct, 'sum'),
@@ -138,7 +153,8 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         tcd_cmis_counts = df_tcd.groupby('MA_DVIQLY').size().reset_index(name='SL_TCD_CMIS')
         
         cmis_base = pd.merge(export_agg, tcd_cmis_counts, on='MA_DVIQLY', how='left').fillna(0)
-        # Công thức: Khách hàng sau TCC = Tổng công tơ - TCD - Nội bộ (TCC)
+        
+        # Đảm bảo phép tính trừ giờ đây luôn là 100% chuẩn xác
         cmis_base['SL_KH_SAU_TCC_CMIS'] = cmis_base['TONGCT'] - cmis_base['SL_TCD_CMIS'] - cmis_base['NOIBO_1P'] - cmis_base['NOIBO_3P']
 
         # --- BƯỚC 3: QUÉT TOÀN BỘ DỮ LIỆU ĐANG KHAI THÁC TRÊN DCU VÀ MODEM ---
@@ -242,20 +258,18 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
 
         df_report = pd.DataFrame(report_data)
 
-        # --- BƯỚC 5: XUẤT BÁO CÁO PHÂN TÁCH ĐỂ TRÁNH QUÁ TẢI EXCEL ---
-        st.success("✅ Phân tích hoàn tất! Bảng dữ liệu chi tiết vượt quá 1 triệu dòng đã được tách riêng.")
+        # --- BƯỚC 5: XUẤT BÁO CÁO PHÂN TÁCH ---
+        st.success("✅ Phân tích hoàn tất! Dữ liệu đã được tính chuẩn xác, bảng siêu lớn > 1 triệu dòng đã được tách thành file CSV riêng biệt.")
         st.dataframe(df_report, use_container_width=True)
 
-        # 1. Xuất file Báo Cáo Tổng Hợp (Excel)
         output_excel = io.BytesIO()
         with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
             df_report.to_excel(writer, index=False, sheet_name='TongHop')
         
-        # 2. Xuất file Dữ Liệu Chi Tiết (CSV để không bị lỗi 1 triệu dòng)
         output_csv = df_all.to_csv(index=False).encode('utf-8')
         
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
             st.download_button("📥 1. TẢI BÁO CÁO TỔNG HỢP (EXCEL)", data=output_excel.getvalue(), file_name="Bao_Cao_Do_Xa.xlsx", type="primary")
         with col_dl2:
-            st.download_button("📥 2. TẢI DATA CHI TIẾT (CSV)", data=output_csv, file_name="Chi_Tiet_1_Trieu_Diem_Do.csv")
+            st.download_button("📥 2. TẢI DATA CHI TIẾT ĐIỂM ĐO (CSV)", data=output_csv, file_name="Chi_Tiet_1_Trieu_Diem_Do.csv")
