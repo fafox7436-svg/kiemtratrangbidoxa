@@ -63,7 +63,7 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         st.error("⚠️ Vui lòng tải đầy đủ các file theo 3 nhóm trên!")
         st.stop()
 
-    with st.spinner("Đang xây dựng ma trận phân tích..."):
+    with st.spinner("Đang xây dựng ma trận phân tích và xử lý dữ liệu..."):
         
         # --- BƯỚC 1: XÂY DỰNG TẬP HỢP TCD VÀ CTT ---
         # 1. Tập TCD
@@ -92,11 +92,17 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         df_export = pd.read_excel(f_export)
         c_dvi_exp = find_col(df_export, ["MA_DVIQLY", "Mã đơn vị"])
         
-        # Group Dataexport theo đơn vị để tính Tổng số lượng
+        # BẢN VÁ LỖI TYPE ERROR TRONG GROUPBY
+        # Khởi tạo các cột nếu file không có để tránh lỗi hàm agg
+        for col in ['TONGCT', 'NOIBO_1P', 'NOIBO_3P']:
+            if col not in df_export.columns:
+                df_export[col] = 0
+                
+        # Group Dataexport theo đơn vị một cách an toàn
         export_agg = df_export.groupby(c_dvi_exp).agg(
-            TONGCT=('TONGCT', 'sum') if 'TONGCT' in df_export.columns else sum,
-            NOIBO_1P=('NOIBO_1P', 'sum') if 'NOIBO_1P' in df_export.columns else sum,
-            NOIBO_3P=('NOIBO_3P', 'sum') if 'NOIBO_3P' in df_export.columns else sum
+            TONGCT=('TONGCT', 'sum'),
+            NOIBO_1P=('NOIBO_1P', 'sum'),
+            NOIBO_3P=('NOIBO_3P', 'sum')
         ).reset_index().rename(columns={c_dvi_exp: 'MA_DVIQLY'})
         
         # Số lượng TCD CMIS (lấy từ độ dài danh sách file TCD theo Điện lực)
@@ -151,6 +157,10 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         df_all = pd.DataFrame(khai_thac_data)
         
         # --- BƯỚC 4: TỔNG HỢP VÀ TÍNH TỶ LỆ ---
+        if df_all.empty:
+            st.error("Không tìm thấy dữ liệu hợp lệ từ các file DCU và Modem tải lên.")
+            st.stop()
+            
         danh_sach_dv = sorted(df_all['MA_DVIQLY'].unique())
         report_data = []
 
@@ -210,7 +220,7 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         df_report = pd.DataFrame(report_data)
 
         # --- BƯỚC 5: XUẤT BÁO CÁO ---
-        st.success("✅ Phân tích hoàn tất! Dữ liệu đã được bóc tách chính xác dựa trên dữ liệu đang khai thác.")
+        st.success("✅ Phân tích hoàn tất! Dữ liệu đã được xử lý xong.")
         st.dataframe(df_report, use_container_width=True)
 
         output = io.BytesIO()
