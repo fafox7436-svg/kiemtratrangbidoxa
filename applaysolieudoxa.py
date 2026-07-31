@@ -12,14 +12,12 @@ def clean_str(val):
     return str(val).strip().upper()
 
 def get_ma_dviqly(mdd):
-    """Trích xuất mã Điện lực (VD: PB0501) từ Mã điểm đo"""
     mdd = clean_str(mdd)
     if mdd.startswith("PB") and len(mdd) >= 6:
         return mdd[:6]
     return "KHAC"
 
 def check_dcu(row, col_ngaygio, col_import):
-    """Kiểm tra có dữ liệu DCU: Bắt buộc NGAYGIO và IMPORT phải có giá trị"""
     val_ngaygio = row.get(col_ngaygio)
     val_import = row.get(col_import)
     if pd.notna(val_ngaygio) and clean_str(val_ngaygio) != "" and pd.notna(val_import) and clean_str(val_import) != "":
@@ -27,7 +25,6 @@ def check_dcu(row, col_ngaygio, col_import):
     return 0
 
 def check_modem(row, col_trangthai):
-    """Kiểm tra có dữ liệu MD: Xử lý cả chuỗi có dấu và không dấu"""
     val_stt = clean_str(row.get(col_trangthai))
     if "CÓ DỮ LIỆU" in val_stt or "CO DU LIEU" in val_stt:
         return 1
@@ -40,7 +37,6 @@ def find_col(df, keywords):
     return None
 
 def load_dataframe(file_obj, keywords_to_find_header):
-    """Hàm đọc file thông minh: Tự động dò tìm dòng chứa tiêu đề thực sự của bảng dữ liệu"""
     if file_obj is None: return None
     try:
         file_obj.seek(0)
@@ -72,6 +68,7 @@ def load_dataframe(file_obj, keywords_to_find_header):
 
 # ================= 2. GIAO DIỆN TẢI FILE =================
 st.title("⚡ Tool Đánh Giá Đo Xa: Tính Toán Trực Tiếp Từ Nguồn Khai Thác")
+st.info("Phiên bản hỗ trợ xử lý dữ liệu siêu lớn (> 1 triệu công tơ)")
 
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -116,29 +113,38 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
             return 'KH_SAU_TCC'
 
         # --- BƯỚC 2: ĐỌC DATAEXPORT CMIS ĐỂ TÍNH BASELINE ---
-        df_export = load_dataframe(f_export, ["MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
-        c_dvi_exp = find_col(df_export, ["MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
+        df_export = load_dataframe(f_export, ["MA_DONVI", "MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
+        c_dvi_exp = find_col(df_export, ["MA_DONVI", "MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
+        c_tong_ct = find_col(df_export, ["TONGCT", "TỔNG CÔNG TƠ", "TỔNG CT"])
         
-        for col in ['TONGCT', 'NOIBO_1P', 'NOIBO_3P']:
-            if col not in df_export.columns:
-                df_export[col] = 0
+        # Cảnh báo chặn lỗi tính ra số âm nếu file bị sai cấu trúc
+        if not c_dvi_exp or not c_tong_ct:
+            st.error("❌ Lỗi cấu trúc: Không tìm thấy cột 'MA_DONVI' hoặc 'TONGCT' trong file DataExport. Vui lòng kiểm tra lại file!")
+            st.stop()
+            
+        c_noibo_1p = find_col(df_export, ["NOIBO_1P", "NỘI BỘ 1P"]) or 'NOIBO_1P_TEMP'
+        c_noibo_3p = find_col(df_export, ["NOIBO_3P", "NỘI BỘ 3P"]) or 'NOIBO_3P_TEMP'
+        
+        if c_noibo_1p == 'NOIBO_1P_TEMP': df_export['NOIBO_1P_TEMP'] = 0
+        if c_noibo_3p == 'NOIBO_3P_TEMP': df_export['NOIBO_3P_TEMP'] = 0
                 
         export_agg = df_export.groupby(c_dvi_exp).agg(
-            TONGCT=('TONGCT', 'sum'),
-            NOIBO_1P=('NOIBO_1P', 'sum'),
-            NOIBO_3P=('NOIBO_3P', 'sum')
+            TONGCT=(c_tong_ct, 'sum'),
+            NOIBO_1P=(c_noibo_1p, 'sum'),
+            NOIBO_3P=(c_noibo_3p, 'sum')
         ).reset_index().rename(columns={c_dvi_exp: 'MA_DVIQLY'})
         
         df_tcd['MA_DVIQLY'] = df_tcd[col_tcd].apply(get_ma_dviqly) if col_tcd else "KHAC"
         tcd_cmis_counts = df_tcd.groupby('MA_DVIQLY').size().reset_index(name='SL_TCD_CMIS')
         
         cmis_base = pd.merge(export_agg, tcd_cmis_counts, on='MA_DVIQLY', how='left').fillna(0)
+        # Công thức: Khách hàng sau TCC = Tổng công tơ - TCD - Nội bộ (TCC)
         cmis_base['SL_KH_SAU_TCC_CMIS'] = cmis_base['TONGCT'] - cmis_base['SL_TCD_CMIS'] - cmis_base['NOIBO_1P'] - cmis_base['NOIBO_3P']
 
         # --- BƯỚC 3: QUÉT TOÀN BỘ DỮ LIỆU ĐANG KHAI THÁC TRÊN DCU VÀ MODEM ---
         khai_thac_data = []
 
-        # 3.1 Quét DCU (Bổ sung ASSETID và IMPORTKWH)
+        # 3.1 Quét DCU
         for f in f_dcu:
             df_d = load_dataframe(f, ["ASSETID", "MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
             c_mdd = find_col(df_d, ["ASSETID", "MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
@@ -157,7 +163,7 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
                             'CO_DU_LIEU': check_dcu(row, c_ngay, c_imp)
                         })
 
-        # 3.2 Quét Modem (Bổ sung TINHTRANG và MA_DIEMDO)
+        # 3.2 Quét Modem
         for f in f_md:
             df_m = load_dataframe(f, ["MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
             c_mdd = find_col(df_m, ["MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
@@ -175,12 +181,11 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
                             'CO_DU_LIEU': check_modem(row, c_stt)
                         })
 
-        # Đóng gói dữ liệu khai thác
         df_all = pd.DataFrame(khai_thac_data)
         
         # --- BƯỚC 4: TỔNG HỢP VÀ TÍNH TỶ LỆ ---
         if df_all.empty:
-            st.error("Không tìm thấy dữ liệu hợp lệ từ các file DCU và Modem tải lên. Vui lòng kiểm tra lại cấu trúc file.")
+            st.error("Không tìm thấy dữ liệu hợp lệ từ các file DCU và Modem tải lên.")
             st.stop()
             
         danh_sach_dv = sorted(df_all['MA_DVIQLY'].unique())
@@ -219,19 +224,16 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
             
             report_data.append({
                 "Mã đơn vị": dvi,
-                
                 "SL KH sau TCC CMIS": int(sl_kh_cmis),
                 "KH sau TCC đang khai thác": kh_khaithac,
                 "Chênh lệch": int(sl_kh_cmis) - kh_khaithac,
                 "Tỷ lệ khai thác KH (%)": round(tl_khaithac, 2),
                 "KH sau TCC có dữ liệu": kh_co_data,
                 "Tỷ lệ thu thập KH sau TCC (%)": round(tl_thuthap, 2),
-                
                 "TCD Khai thác MD": tcd_md,
                 "TCD Khai thác DCU": tcd_dcu,
                 "TCD Có dữ liệu": tcd_co_data,
                 "Tỷ lệ thu thập TCD (%)": round(tl_tcd, 2),
-                
                 "CTT Khai thác MD": ctt_md,
                 "CTT Khai thác DCU": ctt_dcu,
                 "CTT Có dữ liệu": ctt_co_data,
@@ -240,13 +242,20 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
 
         df_report = pd.DataFrame(report_data)
 
-        # --- BƯỚC 5: XUẤT BÁO CÁO ---
-        st.success("✅ Phân tích hoàn tất! Dữ liệu đã được xử lý xong.")
+        # --- BƯỚC 5: XUẤT BÁO CÁO PHÂN TÁCH ĐỂ TRÁNH QUÁ TẢI EXCEL ---
+        st.success("✅ Phân tích hoàn tất! Bảng dữ liệu chi tiết vượt quá 1 triệu dòng đã được tách riêng.")
         st.dataframe(df_report, use_container_width=True)
 
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # 1. Xuất file Báo Cáo Tổng Hợp (Excel)
+        output_excel = io.BytesIO()
+        with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
             df_report.to_excel(writer, index=False, sheet_name='TongHop')
-            df_all.to_excel(writer, index=False, sheet_name='ChiTiet_TatCa_DiemDo')
-            
-        st.download_button("📥 TẢI BÁO CÁO EXCEL", data=output.getvalue(), file_name="Bao_Cao_Do_Xa_Chuan.xlsx", type="primary")
+        
+        # 2. Xuất file Dữ Liệu Chi Tiết (CSV để không bị lỗi 1 triệu dòng)
+        output_csv = df_all.to_csv(index=False).encode('utf-8')
+        
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button("📥 1. TẢI BÁO CÁO TỔNG HỢP (EXCEL)", data=output_excel.getvalue(), file_name="Bao_Cao_Do_Xa.xlsx", type="primary")
+        with col_dl2:
+            st.download_button("📥 2. TẢI DATA CHI TIẾT (CSV)", data=output_csv, file_name="Chi_Tiet_1_Trieu_Diem_Do.csv")
