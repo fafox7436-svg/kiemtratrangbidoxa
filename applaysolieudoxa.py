@@ -22,15 +22,14 @@ def check_dcu(row, col_ngaygio, col_import):
     """Kiểm tra có dữ liệu DCU: Bắt buộc NGAYGIO và IMPORT phải có giá trị"""
     val_ngaygio = row.get(col_ngaygio)
     val_import = row.get(col_import)
-    # Check not NaN và không phải là chuỗi rỗng
     if pd.notna(val_ngaygio) and clean_str(val_ngaygio) != "" and pd.notna(val_import) and clean_str(val_import) != "":
         return 1
     return 0
 
 def check_modem(row, col_trangthai):
-    """Kiểm tra có dữ liệu MD: Cột Trạng thái báo 'Có dữ liệu'"""
+    """Kiểm tra có dữ liệu MD: Xử lý cả chuỗi có dấu và không dấu"""
     val_stt = clean_str(row.get(col_trangthai))
-    if "CÓ DỮ LIỆU" in val_stt:
+    if "CÓ DỮ LIỆU" in val_stt or "CO DU LIEU" in val_stt:
         return 1
     return 0
 
@@ -39,6 +38,37 @@ def find_col(df, keywords):
         for col in df.columns:
             if clean_str(kw) in clean_str(col): return col
     return None
+
+def load_dataframe(file_obj, keywords_to_find_header):
+    """Hàm đọc file thông minh: Tự động dò tìm dòng chứa tiêu đề thực sự của bảng dữ liệu"""
+    if file_obj is None: return None
+    try:
+        file_obj.seek(0)
+        is_csv = file_obj.name.lower().endswith('.csv')
+        
+        if is_csv:
+            df_preview = pd.read_csv(file_obj, header=None, nrows=20, dtype=str)
+        else:
+            df_preview = pd.read_excel(file_obj, header=None, nrows=20, dtype=str)
+            
+        header_idx = 0
+        for i, row in df_preview.iterrows():
+            row_str = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
+            if any(clean_str(kw) in row_str for kw in keywords_to_find_header):
+                header_idx = i
+                break
+                
+        file_obj.seek(0)
+        if is_csv:
+            df = pd.read_csv(file_obj, header=header_idx)
+        else:
+            df = pd.read_excel(file_obj, header=header_idx)
+            
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
+    except Exception as e:
+        st.error(f"Lỗi đọc file {file_obj.name}: {e}")
+        return pd.DataFrame()
 
 # ================= 2. GIAO DIỆN TẢI FILE =================
 st.title("⚡ Tool Đánh Giá Đo Xa: Tính Toán Trực Tiếp Từ Nguồn Khai Thác")
@@ -66,64 +96,56 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
     with st.spinner("Đang xây dựng ma trận phân tích và xử lý dữ liệu..."):
         
         # --- BƯỚC 1: XÂY DỰNG TẬP HỢP TCD VÀ CTT ---
-        # 1. Tập TCD
-        df_tcd = pd.read_excel(f_tcd, dtype=str)
-        col_tcd = find_col(df_tcd, ["MA_KHANG", "MA_DDO", "MÃ KHÁCH HÀNG"])
+        df_tcd = load_dataframe(f_tcd, ["MA_KHANG", "MA_DDO", "MÃ KHÁCH HÀNG", "MÃ ĐIỂM ĐO"])
+        col_tcd = find_col(df_tcd, ["MA_KHANG", "MA_DDO", "MÃ KHÁCH HÀNG", "MÃ ĐIỂM ĐO"])
         set_tcd = set(df_tcd[col_tcd].apply(clean_str).dropna()) if col_tcd else set()
 
-        # 2. Tập CTT (Bao gồm danh sách TCC và các mã chứa chữ RS485)
-        df_tcc = pd.read_excel(f_tcc, dtype=str)
-        col_tcc = find_col(df_tcc, ["MA_KHANG", "MA_DDO"])
+        df_tcc = load_dataframe(f_tcc, ["MA_KHANG", "MA_DDO", "MÃ KHÁCH HÀNG", "MÃ ĐIỂM ĐO"])
+        col_tcc = find_col(df_tcc, ["MA_KHANG", "MA_DDO", "MÃ KHÁCH HÀNG", "MÃ ĐIỂM ĐO"])
         set_ctt = set()
         if col_tcc:
             for mdd in df_tcc[col_tcc].dropna():
                 m = clean_str(mdd)
-                if m not in set_tcd: # Lọc 1: Nếu không nằm trong TCD thì đưa vào CTT
+                if m not in set_tcd:
                     set_ctt.add(m)
 
         def phan_loai_diem_do(mdd):
-            """LOGIC PHÂN LỚP: Ưu tiên TCD -> CTT -> Khách hàng sau TCC"""
-            if "RS485" in mdd: return 'CTT' # Nhận diện nhanh qua tên mã
+            if "RS485" in mdd: return 'CTT'
             if mdd in set_tcd: return 'TCD'
             if mdd in set_ctt: return 'CTT'
             return 'KH_SAU_TCC'
 
         # --- BƯỚC 2: ĐỌC DATAEXPORT CMIS ĐỂ TÍNH BASELINE ---
-        df_export = pd.read_excel(f_export)
-        c_dvi_exp = find_col(df_export, ["MA_DVIQLY", "Mã đơn vị"])
+        df_export = load_dataframe(f_export, ["MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
+        c_dvi_exp = find_col(df_export, ["MA_DVIQLY", "Mã đơn vị", "MA_DVI"])
         
-        # BẢN VÁ LỖI TYPE ERROR TRONG GROUPBY
-        # Khởi tạo các cột nếu file không có để tránh lỗi hàm agg
         for col in ['TONGCT', 'NOIBO_1P', 'NOIBO_3P']:
             if col not in df_export.columns:
                 df_export[col] = 0
                 
-        # Group Dataexport theo đơn vị một cách an toàn
         export_agg = df_export.groupby(c_dvi_exp).agg(
             TONGCT=('TONGCT', 'sum'),
             NOIBO_1P=('NOIBO_1P', 'sum'),
             NOIBO_3P=('NOIBO_3P', 'sum')
         ).reset_index().rename(columns={c_dvi_exp: 'MA_DVIQLY'})
         
-        # Số lượng TCD CMIS (lấy từ độ dài danh sách file TCD theo Điện lực)
-        df_tcd['MA_DVIQLY'] = df_tcd[col_tcd].apply(get_ma_dviqly)
+        df_tcd['MA_DVIQLY'] = df_tcd[col_tcd].apply(get_ma_dviqly) if col_tcd else "KHAC"
         tcd_cmis_counts = df_tcd.groupby('MA_DVIQLY').size().reset_index(name='SL_TCD_CMIS')
         
-        # Merge và tính Số lượng Khách hàng sau TCC CMIS
         cmis_base = pd.merge(export_agg, tcd_cmis_counts, on='MA_DVIQLY', how='left').fillna(0)
         cmis_base['SL_KH_SAU_TCC_CMIS'] = cmis_base['TONGCT'] - cmis_base['SL_TCD_CMIS'] - cmis_base['NOIBO_1P'] - cmis_base['NOIBO_3P']
 
         # --- BƯỚC 3: QUÉT TOÀN BỘ DỮ LIỆU ĐANG KHAI THÁC TRÊN DCU VÀ MODEM ---
         khai_thac_data = []
 
-        # 3.1 Quét DCU
+        # 3.1 Quét DCU (Bổ sung ASSETID và IMPORTKWH)
         for f in f_dcu:
-            df_d = pd.read_excel(f) # Không ép kiểu str ngay để giữ nguyên format Datetime của NGAYGIO
-            c_mdd = find_col(df_d, ["MADIEMDO", "MÃ ĐIỂM ĐO"])
-            c_ngay = find_col(df_d, ["NGAYGIO"])
-            c_imp = find_col(df_d, ["IMPORT"])
+            df_d = load_dataframe(f, ["ASSETID", "MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
+            c_mdd = find_col(df_d, ["ASSETID", "MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
+            c_ngay = find_col(df_d, ["NGAYGIO", "NGÀY GIỜ", "THỜI GIAN"])
+            c_imp = find_col(df_d, ["IMPORTKWH", "IMPORT"])
             
-            if c_mdd and c_ngay and c_imp:
+            if c_mdd:
                 for _, row in df_d.iterrows():
                     mdd = clean_str(row[c_mdd])
                     if mdd:
@@ -135,13 +157,13 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
                             'CO_DU_LIEU': check_dcu(row, c_ngay, c_imp)
                         })
 
-        # 3.2 Quét Modem
+        # 3.2 Quét Modem (Bổ sung TINHTRANG và MA_DIEMDO)
         for f in f_md:
-            df_m = pd.read_excel(f, dtype=str)
-            c_mdd = find_col(df_m, ["MADIEMDO", "MÃ ĐIỂM ĐO"])
-            c_stt = find_col(df_m, ["TRANGTHAI", "TRẠNG THÁI"])
+            df_m = load_dataframe(f, ["MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
+            c_mdd = find_col(df_m, ["MA_DIEMDO", "MADIEMDO", "MÃ ĐIỂM ĐO"])
+            c_stt = find_col(df_m, ["TINHTRANG", "TRANGTHAI", "TRẠNG THÁI", "TÌNH TRẠNG"])
             
-            if c_mdd and c_stt:
+            if c_mdd:
                 for _, row in df_m.iterrows():
                     mdd = clean_str(row[c_mdd])
                     if mdd:
@@ -158,7 +180,7 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         
         # --- BƯỚC 4: TỔNG HỢP VÀ TÍNH TỶ LỆ ---
         if df_all.empty:
-            st.error("Không tìm thấy dữ liệu hợp lệ từ các file DCU và Modem tải lên.")
+            st.error("Không tìm thấy dữ liệu hợp lệ từ các file DCU và Modem tải lên. Vui lòng kiểm tra lại cấu trúc file.")
             st.stop()
             
         danh_sach_dv = sorted(df_all['MA_DVIQLY'].unique())
@@ -167,7 +189,6 @@ if st.button("🚀 CHẠY PHÂN TÍCH", type="primary"):
         for dvi in danh_sach_dv:
             dv_data = df_all[df_all['MA_DVIQLY'] == dvi]
             
-            # Lấy số CMIS từ bảng Base
             cmis_info = cmis_base[cmis_base['MA_DVIQLY'] == dvi]
             sl_kh_cmis = cmis_info['SL_KH_SAU_TCC_CMIS'].values[0] if not cmis_info.empty else 0
             
